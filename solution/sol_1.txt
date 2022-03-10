@@ -1,0 +1,178 @@
+Description of the data
+Data summary and statistics
+Pair Plot
+Train & Test Split
+Simple Linear regression
+Predire l’age des Abalones
+#loading all necessary packages
+library(readr)
+library(dplyr)
+library(car)
+library(lmtest)
+library(ggplot2)
+library(GGally)
+library(ggfortify)
+library(gridExtra)
+library(MASS)
+library(leaps)
+library(glmnet)
+library(caret)
+library(gbm)
+library(randomForest)
+Description of the data
+Abalones are onetype of reef-dwelling marine snails. It is difficult to tell the ages of abalones because their shellsizes not only depend on how old they are, but also depend on the availability of food. The study of age is usually by obtaining a stained sample of the shell and looking at the number of rings through a microscope. We are interested in using some of abalones physical measurements, especially the height measurement to predict their ages. Biologists believe that a simple linear regression model with normal error assumption is appropriate to describe the relationship between the height of abalones and their ages. In particular, that a larger height is associated with an older age.
+
+The dataset and its description is available at https://archive.ics.uci.edu/ml/datasets/Abalone.
+
+Data summary and statistics
+abalone <- read_csv("Abalone_data.csv")
+
+str(abalone, give.attr = FALSE)
+## tibble [4,176 × 9] (S3: spec_tbl_df/tbl_df/tbl/data.frame)
+##  $ Sex           : chr [1:4176] "M" "F" "M" "I" ...
+##  $ Length        : num [1:4176] 70 106 88 66 85 106 109 95 110 105 ...
+##  $ Diameter      : num [1:4176] 53 84 73 51 60 83 85 74 88 76 ...
+##  $ Height        : num [1:4176] 18 27 25 16 19 30 25 25 30 28 ...
+##  $ Whole_weight  : num [1:4176] 45.1 135.4 103.2 41 70.3 ...
+##  $ Shucked_weight: num [1:4176] 19.9 51.3 43.1 17.9 28.2 47.4 58.8 43.3 62.9 38.8 ...
+##  $ Viscera_weight: num [1:4176] 9.7 28.3 22.8 7.9 15.5 28.3 29.9 22.5 30.2 29.5 ...
+##  $ Shell_weight  : num [1:4176] 14 42 31 11 24 66 52 33 64 42 ...
+##  $ Rings         : num [1:4176] 7 9 10 7 8 20 16 9 19 14 ...
+We see that the type of variable sex needs to be corrected.
+
+abalone$Sex <- as.factor(abalone$Sex)
+
+
+library(knitr)
+kable(abalone[1:10,], digits = 4,format = 'markdown')
+Sex	Length	Diameter	Height	Whole_weight	Shucked_weight	Viscera_weight	Shell_weight	Rings
+M	70	53	18	45.1	19.9	9.7	14	7
+F	106	84	27	135.4	51.3	28.3	42	9
+M	88	73	25	103.2	43.1	22.8	31	10
+I	66	51	16	41.0	17.9	7.9	11	7
+I	85	60	19	70.3	28.2	15.5	24	8
+F	106	83	30	155.5	47.4	28.3	66	20
+F	109	85	25	153.6	58.8	29.9	52	16
+M	95	74	25	101.9	43.3	22.5	33	9
+F	110	88	30	178.9	62.9	30.2	64	19
+F	105	76	28	121.3	38.8	29.5	42	14
+Categorial Variables
+Sex	Number of observations
+M	1527
+F	1307
+I	1342
+Numeric Variables
+Length	Diameter	Height	Whole Weight	Shucked Weight	Viscera Weight	Shell Weight	Rings
+Min	15.0	11.00	0.0000	0.4	0.20	0.10	0.30	1
+Median	109.0	85.00	28.00	159.9	67.20	34.20	46.80	9
+Mean	104.8	81.58	27.91	165.8	71.88	36.12	47.77	9.932
+Max	163.0	130.00	226.00	565.1	297.60	152.00	201.00	29
+Cor	0.557	0.5750	0.5581	0.5408	0.4212	0.5043	0.6280	1.000
+Looking at the dataset summary, we can see that data is quite evenly distributed between the three factor levels of male, female and infant.
+
+Also from we see that there are four different measures of weight i.e. Whole_weight, Shucked_weight, Viscera_weight and Shell.weight. Whole_weight is linear function of other weight predictors with Unknown mass of water/blood lost from shucking process. Also we observed that min value of predictor Height is 0. Practically this is not possible, we will investigate these observations to look closely.
+
+Response variable
+The dependent variable Rings is included in the dataset. It was measured as the number of rings observed after cutting and examining an abalone. Although it does not denote the age of a given abalone directly, it determines it more-or-less perfectly. The age of an abalone equals Rings + 1.5 . Since this relationship holds reliably, Rings will be considered as the dependent variable. The number of rings measured in the data ranges from 1 to 29 and most of the abalone have between 5 and 15 rings. The distribution is slightly positively skewed as well but this does not pose any specific problems for the further analysis. (see plot below)
+Pair Plot
+ggpairs(abalone, aes(colour = Sex, alpha = 0.8), title="Pairs plot for abalone dataset") + theme_grey(base_size = 8)
+
+
+Observations from Pair Plot :
+First thing to note here is high correlation in data. There seems to be high multicollinearity between the predictors. for example correlation between Diameter and Length is extremely high (about 98.7).
+
+Similarly Whole_weight seems to be highly correlated with other weight predictors and is the sum of Shucked_weight, Viscera_weight and Shell_weight.
+
+Secondly, the distributions of predictor Sex with factor level value of female and male are very similar with respect to all other predictors.
+
+The shape of distribution is also significantly similar for factor levels of female and male.
+
+We could think about redefining this feature to define gender as infant vs non-infant (where non-infant = female and male both).
+
+Most of the abalones rings are between 5 and 15.
+
+Addition of variables: We will update the abalone dataset to create new variable named Infant which will have values based on original value from Sex variable. It will have value of I, when Sex variable is I and NI otherwise.
+
+abalone['Infant'] <- ifelse(abalone$Sex == 'I','I','NI')
+abalone$Infant <- as.factor(abalone$Infant)
+abalone$Sex <- as.factor(abalone$Sex)
+Also we observed that min value of predictor Height is 0. Practically this is not possible, we will investigate these observations to look closely.
+Train & Test Split
+We will start with diving our dataset in train and test. The dataset will be splitted between train and test with the ratio of 70/30 with random selected observations.
+set.seed(42)
+#Splitting dataset in train and test using 70/30 method
+indexes <- sample(1:nrow(abalone), size = 0.3 * nrow(abalone))
+abalone_train <- abalone[-indexes,]
+abalone_test <- abalone[indexes,]
+Simple Linear regression
+First model
+We start with fitting a simple linear model with one explanatory variable height as suggested by the biologists and we inspect the residues
+mod_simple <- lm(Rings~ Height,data=abalone_train)
+autoplot(mod_simple)
+## Warning: `arrange_()` is deprecated as of dplyr 0.7.0.
+## Please use `arrange()` instead.
+## See vignette('programming') for more help
+## This warning is displayed once every 8 hours.
+## Call `lifecycle::last_warnings()` to see where this warning was generated.
+
+
+The diagnostics plots reveals two issues:
+
+The qq-plot reveals that the Gaussian assumption is not sastified. We observe indeed a significant deviation from the diagonal for extreme values on the right.
+
+The zero-mean noise assumption looks reasonable according to the first plot.
+
+However we clearly observe heteroscedastic noise on the first and third plot.
+
+We do not observe outliers on the fourth plot. All plots are within cook-distance boundaries.
+
+It is clear that this model is not satisfying. We can attempt a transformation of the response variable to get a valid model. We could use the BoxCox transformation between the response variable and the covariates.
+
+Log-transform of the response
+We suggest to use first a simple log-transform of the response:
+
+#abalone_trainlog<-mutate(abalone_train,logRings=log(Rings))
+#abalone_trainlog<-subset(abalone_trainlog,select=c(-Rings))
+
+abalone_trainlog  <- abalone_train %>% mutate(logRings=log(Rings)) %>% subset(select=c(-Rings))
+
+mod_simplelog <- lm(logRings~ Height,data=abalone_trainlog)
+autoplot(mod_simplelog)
+
+
+The log-transform of the response did improve the diagnostic plots:
+
+- We can now accept the Gaussianity assumption (qqplot)).
+
+- The first plot reveals some sort of parabolic residues but nothing too egregious.
+
+- The third plot shows some improvement regarding homoscedasticity. We could work with that.
+
+- The fourth plot did not reveal any outlier.
+We could use this simple model to study the biologists hypothesis. But we will investigate a little bit more and try to suggest a better model by introducing more variables.
+
+Looking at the correlations, it might not make sense to introduce all the weight variables. We will only add whole_weight. Similarly, Diameter and Height are strongly correlated with Length. We may not need them. We will add a polynom of variable Length.
+
+We look now at the factor variable Sex.
+
+ggplot(abalone_train)+geom_boxplot(aes(x=Sex,y=Rings))
+
+
+Unsurprisingly, we observe a slight difference in the number of rings betweenn infant and non infant. No difference between male and female abalone. It might make sense to add this variable to the model.
+
+We consider the linear model
+
+mod_multilog1 <- lm(logRings ~ Sex+Length+ Whole_weight,data = abalone_trainlog)
+autoplot(mod_multilog1)
+ This model looks valid too but there is still some quadratic structure that we did not catch.
+
+We consider now the quadratic model
+log(Y)=β0+β1Height+β2Whole.weight+β3Height2+β4Sex+ξ.
+
+mod_multilog2 <- lm(logRings ~ Sex+poly(Height,2)+ Whole_weight,data = abalone_trainlog)
+autoplot(mod_multilog2)
+
+
+The diagnostic plots show that we have improve the zero mean and homoscedascity of the residues. The qq-plot reveals a slightly worse deviation from gaussianity for extreme values on the right. But this is still acceptable.
+
+

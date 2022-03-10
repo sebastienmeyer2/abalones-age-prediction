@@ -1,0 +1,384 @@
+---
+title: "Project: Abalones age prediction"
+author: "Ali Haidar, Sébastien Meyer"
+date: ""
+output:
+    html_document:
+        code_folding: hide
+        toc: true
+        toc_float: true
+        df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.align = "center", warning = FALSE, eval = TRUE, tidy = FALSE)
+```
+
+# Introduction
+
+Abalones are one type of reef-dwelling marine snails. It is difficult to tell the ages of abalones because their shellsizes not only depend on how old they are, but also depend on the availability of food. The study of age is usually by obtaining a stained sample of the shell and looking at the number of rings through a microscope. We are interested in using some of abalones physical measurements, especially the height measurement to predict their ages. Biologists believe that a simple linear regression model with normal error assumption is appropriate to describe the relationship between the height of abalones and their ages. In particular, that a larger height is associated with an older age.
+
+The dataset and its description are available at https://archive.ics.uci.edu/ml/datasets/Abalone.
+
+## Global libraries and parameters
+
+Firstly, we import the necessary libraries.
+
+```{r}
+library(readr)
+library(carData)
+library(car)
+library(knitr)
+library(ggplot2)
+library(GGally)
+library(ggfortify)
+```
+
+Then, we set up global parameters.
+
+```{r}
+set.seed(42)
+```
+
+## Importing the data
+
+```{r}
+# Read the csv file
+abalone <- read.csv2("abalone_data.csv", header = T, sep = ",")
+
+# Lowercase column names
+names(abalone) <- tolower(names(abalone))
+
+# Data types
+abalone$sex <- as.factor(abalone$sex)
+abalone$whole_weight <- as.double(abalone$whole_weight)
+abalone$shucked_weight <- as.double(abalone$shucked_weight)
+abalone$viscera_weight <- as.double(abalone$viscera_weight)
+abalone$shell_weight <- as.double(abalone$shell_weight)
+
+# Splitting dataset in train and test using 70/30 method
+indices <- sample(seq_len(nrow(abalone)), size = 0.3 * nrow(abalone))
+abalone_train <- abalone[-indices, ]
+abalone_test <- abalone[indices, ]
+```
+
+# Part I: EDA and Model validation
+
+**Question 2.** Find summary measures of each variables (mean, variance, range, etc). Examine the variables individually (univariate). Graphically display each. Describe what you see.
+
+```{r}
+str(abalone)
+```
+
+In the Abalone dataset, we have the following variables:
+
+- **sex**: *factor* corresponding to the sex of the snail, which can be male (M), female (F) and infant (I)
+- **length**: *integer* corresponding to the length of the shell
+- **diameter**: *integer* corresponding to the diameter of the shell, perpendicular to length
+- **height**: *integer* corresponding to the height of the meat inside the shell
+- **whole_weight**: *double* corresponding to the weight of the whole abalone
+- **shucked_weight**: *double* corresponding to the weight of the meat inside the shell
+- **viscera_weight**: *double* corresponding to the weight of the gut after bleeding
+- **shell_weight**: *double* corresponding to the weight of the shell alone
+- **rings**: *integer* corresponding to the number of rings on the shell, +1.5 gives the age of the abalone in years
+
+```{r}
+summary(abalone)
+```
+
+From this summary, we can deduce that the data points that we have are evenly distributed among the **sex** variable. Regarding the dependent variable **rings**, we observe that values range from 1 to 29, which correspond to ages from 2.5 to 30.5 years. Median and mean are relatively close, with a small skew for the dependent variable.
+
+**Question 3.** Generate a labeled scatterplot of the data. Describe interesting features trends. Does it agree with the biologists’ hypothesis?
+
+```{r}
+# Correlation and distribution plots
+ggpairs(
+    abalone,
+    aes(color = sex, alpha = 1),
+    title = "Scatterplot and correlation for abalone dataset",
+    lower = list(combo = wrap("facethist", binwidth = 5)),
+    upper = list(continuous = wrap(ggally_cor, size = 2))
+) +
+theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = -90, vjust = 0.5),
+    strip.text.x = element_text(size = 6),
+    strip.text.y = element_text(size = 5)
+)
+```
+
+We recall from the introduction that biologists believe there is a linear dependence between the **height** of abalones and their age. From the last line of the plot, we observe that there is indeed a correlation between large height values and large numbers of rings, however a simple linear dependence does not seem clear.
+
+Secondly, there are very high correlations between the different explicative variables. For instance, there is a correlation of 0.987 between diameter and length, which can make the explanation of our models more difficult.
+
+In addition, the separation between infants and adults is clear in almost all plots. However, distributions of variables for both male and female abalones are very similar. This indicates that the major difference is between infants and adults and might be a better variable for modeling.
+
+**Question 1.** Write a mathematical formula modelling the several assumptions in the above description. Describe what kind of statistical techniques you are going to use to study these hypothesis (confidence intervals, test, ...).
+
+The simple linear model can be described as follows, where $Y$ is associated to **rings** and $X$ is associated to **height**: $Y = X \beta + \epsilon$. Under the normal error assumption, we have to check if the following properties are indeed verified:
+
+**[P0]** $X$ is of full rank.
+
+**[P1]** Errors are centered: $\forall i = 1..n, \mathbb{E}_{\beta}(\epsilon_i) = 0$.
+
+Possible assessment:
+
+- The mean curve in the *Residuals vs. Fitted* plot should be close to zero and straight
+
+**[P2]** Errors have homoscedastic variance: $\forall i = 1..n, \text{Var}_{\beta}(\epsilon_i) = \sigma^2$.
+
+Possible assessments:
+
+- The *Scale-Location* plot shows the repartition of residuals among observations, which should be uniform
+
+- The *Breush-Pagan* test allows to assess the $\mathcal{H}_0$ hypothesis of homoscedasticity, which is rejected if the $p$-value is smaller than 0.05
+
+In particular, a square or log transformation of the dependent variable $Y$ might improve the model in case the homoscedastic assumption is rejected.
+
+**[P3]** Errors are uncorrelated: $\forall i \neq j, \text{Cov}(\epsilon_i, \epsilon_j) = 0$.
+
+Possible assessments:
+
+- The *auto-correlation* function should not exceed the confidence interval around 0
+
+- The *Durbin-Watson* test allows to assess the $\mathcal{H}_0$ hypothesis of uncorrelation, which is rejected if the $p$-value is smaller than 0.05
+
+**[P4]** Errors are gaussian: $\forall i = 1..n, \epsilon_i \hookrightarrow \mathbb{N}(0, \sigma^2)$.
+
+Possible assessments:
+
+- The *Q-Q* plot shows the comparison between the quantiles of the standardized residuals and a true normal distribution, which should be close enough
+
+- The *Shapiro-Wilk* test allows to assess the $\mathcal{H}_0$ hypothesis of gaussianity, which is rejected if the $p$-value is smaller than 0.05
+
+**Question 4.** Fit a simple linear regression to the data predicting number of rings using height of the abalones.
+
+```{r}
+# Simple linear model using only height
+lm_height <- lm(rings ~ height, data = abalone_train)
+```
+
+**Question 5.** Generate a labeled scatterplot that displays the data and the estimated regression function line. Describe the line’s fit.
+
+```{r}
+# Fitted values
+ggplot(data = abalone_train) +
+ggtitle("Fit plot of our simple linear model") +
+geom_point(aes(x = height, y = rings), alpha = 0.8) +
+geom_abline(
+    intercept = lm_height$coefficients[1],
+    slope = lm_height$coefficients[2],
+    colour = "blue"
+) +
+theme(plot.title = element_text(hjust = 0.5))
+```
+
+From the fitted line and scatter plot, we can deduce that the linear model might not be sufficient to describe the relationship between **height** and **rings** variables.
+
+**Question 6.** Do diagnostics to assess whether the model assumptions are met; if not, appropriately transform height and/or number of rings and refit your model. Justify your decisions (and recheck your diagnostics).
+
+First, we assess the initial assumptions for the linear regression of **rings** using **height** only.
+
+```{r}
+autoplot(lm_height)
+```
+
+**[P0]** Since we are only using one feature, $X$ is undoubtedly of full rank.
+
+**[P1]** It is clear that, for higher values of **rings**, the residuals are negative in average. This shows that the model predicts too high values and indicates for a transformation of the dependent variable.
+
+**[P2]** Below, we show the *Breush-Pagan* test's $p$-value. The $p$-value is 2.22e-16, therefore we can reject $\mathcal{H}_0$. In addition, we see from the plot that the residuals are clearly not equally spread.
+
+```{r}
+# Breush-Pagan test
+ncvTest(lm_height)
+```
+
+**[P3]** Below, we show the $auto-correlation$ plot as well as the *Durbin-Watson* test's $p$-value. The $p$-value is negligeable, therefore we can reject $\mathcal{H}_0$. Moreover, the auto-correlation function of residuals is clearly not close to zero.
+
+```{r}
+# Auto-correlation function
+acf(lm_height$residuals, main = "Auto-correlation function of residuals")
+```
+
+```{r}
+# Durbin-Watson test
+durbinWatsonTest(lm_height)
+```
+
+**[P4]** Below, we show the *Shapiro-Wilk* test's $p$-value. The $p$-value is negligeable, therefore we can reject $\mathcal{H}_0$. In addition, the plot shows that there is a clear deviation from a normal distribution for higher quantiles.
+
+```{r}
+# Shapiro-Wilk test
+shapiro.test(lm_height$residuals)
+```
+
+All in all, from our assumptions, only **[P0]** seems to be verified and **[P1]** to a certain extent. All **[P2]**, **[P3]** and **[P4]** are not verified. From our observations, a transformation of the dependent variable $Y$ might improve our results. The fact that the predictions made by our model are larger than actual values, we will thus try the following transformation: $\log(Y)$. The model is now: $\log(Y) = X \beta + \epsilon$.
+
+```{r}
+# Linear model using only height w. log transformation
+abalone_train$log_rings <- log(abalone_train$rings)
+abalone_test$log_rings <- log(abalone_test$rings)
+
+lm_log_height <- lm(log_rings ~ height, data = abalone_train)
+```
+
+Finally, we perform our tests again, with our modified model.
+
+```{r}
+autoplot(lm_log_height)
+```
+
+**[P0]** $X$ is still of full rank.
+
+**[P1]** The results are not perfect, with an inversed U-shape. This might indicate a relationship with square of **height**.
+
+**[P2]** Below, we show the *Breush-Pagan* test's $p$-value. The plot is much better than for the simple linear model, with a red curve close to 1. Also, the $p$-value is 0.72724, which is larger than 0.05 and $\mathcal{H}_0$ cannot be rejected.
+
+```{r}
+# Breush-Pagan test
+ncvTest(lm_log_height)
+```
+
+**[P3]** Below, we show the $auto-correlation$ plot as well as the *Durbin-Watson* test's $p$-value. The auto-correlation is very similar to the simple linear model.
+
+```{r}
+# Auto-correlation function
+acf(lm_log_height$residuals, main = "Auto-correlation function of residuals")
+```
+
+```{r}
+# Durbin-Watson test
+durbinWatsonTest(lm_log_height)
+```
+
+**[P4]** Below, we show the *Shapiro-Wilk* test's $p$-value. The plot is much closer to the normal distribution with our log transformation of the dependent variable. However, the $p$-value of the test is still smaller than 0.05.
+
+```{r}
+# Shapiro-Wilk test
+shapiro.test(lm_log_height$residuals)
+```
+
+Therefore, we see that **[P2]** and **[P4]** are now verified, at least to a certain extent. With our new model, **[P3]** is still not verified.
+
+**Question 7**. Interpret your final parameter estimates in context of the problem. Is there a statistically significant relationship between the height and the number of rings (and hence, the age) of abalones?
+
+We will now try out the following model: $\log(Y) = X \beta + \epsilon$ where $X$ contains the square of **height** plus **height**.
+
+```{r}
+# Linear model using only height w. log transformation and square of height
+abalone_train$height2 <- abalone_train$height**2
+abalone_test$height2 <- abalone_test$height**2
+
+lm_log_height2 <- lm(log_rings ~ height + height2, data = abalone_train)
+```
+
+```{r}
+autoplot(lm_log_height2)
+```
+
+**[P0]** $X$ is still of full rank.
+
+**[P1]** The expectation of residuals is getting closer to zero again.
+
+**[P2]** Below, we show the *Breush-Pagan* test's $p$-value. Results are slightly better with this model.
+
+```{r}
+# Breush-Pagan test
+ncvTest(lm_log_height2)
+```
+
+**[P3]** Below, we show the $auto-correlation$ plot as well as the *Durbin-Watson* test's $p$-value. Results are very similar to the model containing only the **height**.
+
+```{r}
+# Auto-correlation function
+acf(lm_log_height2$residuals, main = "Auto-correlation function of residuals")
+```
+
+```{r}
+# Durbin-Watson test
+durbinWatsonTest(lm_log_height2)
+```
+
+**[P4]** Below, we show the *Shapiro-Wilk* test's $p$-value. Again, results are very similar here.
+
+```{r}
+# Shapiro-Wilk test
+shapiro.test(lm_log_height2$residuals)
+```
+
+Regarding the relationship between **rings** and **height**, our final model will be between the logarithm of **rings** and both **height** and squared **height**.
+
+```{r}
+summary(lm_log_height2)
+```
+
+From the summary of our linear model, we observe thatt the $p$-value associated to the intercept, **height** and squared **height** are close to zero, thus we can say that there is a statistically significant relationship between **log(rings)** and **height**, squared **height**.
+
+**Question 8**. Consider now all variables. Look at the scatterplot of the data ($\texttt{GGally:ggpairs}$). Look for correlations between predictors. Select some additional variables to add to the simple linear model in order to better predict number of rings. Justify your choices (keep in mind that we want a practical method to predict number of rings). Perform a multiple linear regression. Check the validity of the model. If validity conditions are not met, transform some variables, add/delete some variables, check for outliers and recheck until you find an acceptable model.
+
+Regarding the other variables, we see that **diameter** is very correlated with **length**. Therefore, we will only consider **length**. Likewise, all the weights variables are very correlated, we will only consider **whole_weight** for now. We will also add a new variable **adulthood** that will be used in replacement of **sex**.
+
+Now, let's have a look at possible outliers. The influence plots allow us to detect influential points. More specifically, Cook's distance on the first graph highlights which observations are more likely to influence the values of $\beta$. Then, the two next plots evaluate outliers. Finally, the last graph also indicates which points have a high leverage. The studentized and Bonferroni plots can be completed with a test of hypothesis $\mathcal{H}_0$ that the observation is not an outlier.
+
+```{r}
+influenceIndexPlot(lm_log_height2)
+```
+
+```{r}
+outlierTest(lm_log_height2)
+```
+
+The influence plots help us detect outliers. As we could observe from the *Residuals vs. Leverage* plot of our last model, there are two points which can be pointed out as outliers. The points that we decide to remove from our study will be points number 1257 and 3996.
+
+```{r}
+# Multiple linear regression model
+abalone_train$adulthood <- 1
+abalone_train$adulthood[abalone_train$sex == "I"] <- 0
+abalone_test$adulthood <- 1
+abalone_test$adulthood[abalone_test$sex == "I"] <- 0
+
+# Remove outliers
+abalone_train$cook_dist <- cooks.distance(lm_log_height2)
+abalone_train_out <- subset(abalone_train, cook_dist < 0.1)
+
+lm_multi <- lm(
+    log_rings ~ height + height2 + adulthood + length + whole_weight,
+    data = abalone_train_out
+)
+```
+
+```{r}
+autoplot(lm_multi)
+```
+
+**[P0]** $X$ is still of full rank given the success of the algorithm.
+
+**[P1]**
+
+**[P2]** Below, we show the *Breush-Pagan* test's $p$-value.
+
+```{r}
+# Breush-Pagan test
+ncvTest(lm_multi)
+```
+
+**[P3]** Below, we show the $auto-correlation$ plot as well as the *Durbin-Watson* test's $p$-value.
+
+```{r}
+# Auto-correlation function
+acf(lm_multi$residuals, main = "Auto-correlation function of residuals")
+```
+
+```{r}
+# Durbin-Watson test
+durbinWatsonTest(lm_multi)
+```
+
+**[P4]** Below, we show the *Shapiro-Wilk* test's $p$-value.
+
+```{r}
+# Shapiro-Wilk test
+shapiro.test(lm_multi$residuals)
+```
+
