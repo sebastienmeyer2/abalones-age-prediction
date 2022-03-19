@@ -393,7 +393,7 @@ Below, we show a graph gathering different transformations of our features leadi
 ```{r}
 # Correlation and distribution plots w. log transformation
 log_cols <- c(
-    "adulthood", "log_length", "log_diameter", "height", "height2", "log_whole_weight",
+    "sex", "log_length", "log_diameter", "height", "height2", "log_whole_weight",
     "log_shucked_weight", "log_viscera_weight", "log_shell_weight",
     "log_rings"
 )
@@ -414,13 +414,112 @@ theme(
 ```
 
 ```{r}
+# Add log of some of the features
 lm_log_multi <- lm(
-    log_rings ~ log_diameter + log_length + height + height2 + log_shucked_weight +
-    log_viscera_weight + log_whole_weight + log_shell_weight + adulthood,
+    log_rings ~ log_length + height + height2 + log_shucked_weight + log_whole_weight +
+    log_shell_weight + adulthood,
     data = abalone_train
+)
+
+# Remove outliers
+abalone_train$cook_dist_multi <- cooks.distance(lm_log_multi)
+abalone_train_multi <- subset(abalone_train, cook_dist_multi < 0.1)
+lm_log_multi <- lm(
+    log_rings ~ log_length + height + height2 + log_shucked_weight + log_whole_weight +
+    log_shell_weight + adulthood,
+    data = abalone_train_multi
 )
 ```
 
 ```{r}
+autoplot(lm_log_multi)
+```
+
+**[P1]** The residuals are not equally distributed, but the mean is close to zero with a small U-shape.
+
+**[P2]** Standardized residuals are equally distributed but the line is not straight. The $p$-value indicates that $\mathcal{H}_0$ is rejected.
+
+```{r}
+# Breush-Pagan test
+ncvTest(lm_log_multi)
+```
+
+**[P3]** Below, we show the $auto-correlation$ plot as well as the *Durbin-Watson* test's $p$-value. In terms of autocorrelation, the values are largely smaller than for our simple linear model but still above the confidence interval.
+
+```{r}
+# Auto-correlation function
+acf(lm_log_multi$residuals, main = "Auto-correlation function of residuals")
+```
+
+```{r}
+# Durbin-Watson test
+durbinWatsonTest(lm_log_multi)
+```
+
+**[P4]** Below, we show the *Shapiro-Wilk* test's $p$-value. Again, results are very similar here, with a distance between true and predicted quantiles getting larger at the extremes.
+
+```{r}
+# Shapiro-Wilk test
+shapiro.test(lm_log_multi$residuals)
+```
+
+Regarding the relationship between **rings** and **height**, our simple model will be between the logarithm of **rings** and both **height** and squared **height**.
+
+```{r}
+summary(lm_log_multi)
+
 predict_log_error(lm_log_multi, abalone_test)
 ```
+
+Finally, all the coefficients are significant in this model, and the final RSS on test data is below 5.
+
+## Forward feature selection
+
+In this section, we perform a forward feature selection. We use a model consisting of all known features and interaction terms with the **adulthood** feature. Then, the model performs a selection of the features based on results on the training set. The final best model is summed up below.
+
+```{r}
+# Forward selection start from simplest model
+abalone_train_copy <- data.frame(abalone_train)
+lm_log_intercept <- lm(log_rings ~ 1, data = abalone_train_copy)
+
+lm_complete <- lm(
+    log_rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
+    diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
+    log_height + height * adulthood + height2 * adulthood + log_height * adulthood + shucked_weight
+    + log_shucked_weight + shucked_weight * adulthood + log_shucked_weight * adulthood +
+    viscera_weight + log_viscera_weight + viscera_weight * adulthood + log_viscera_weight *
+    adulthood + whole_weight + log_whole_weight + whole_weight * adulthood + log_whole_weight *
+    adulthood + shell_weight + log_shell_weight + shell_weight * adulthood + log_shell_weight *
+    adulthood,
+    data = abalone_train_copy
+)
+
+lm_fwd <- stepAIC(
+    lm_log_intercept,
+    scope = list(upper = lm_complete, lower = lm_log_intercept),
+    trace = T,
+    direction = c("forward"),
+    data = abalone_train_copy
+)
+
+summary(lm_fwd)
+
+predict_log_error(lm_fwd, abalone_test)
+```
+
+This method allowed us to diminish the RSS even further. Below, we present the best model in terms of RSS that we manually computed.
+
+```{r}
+best_lm_log_multi <- lm(
+    log_rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train
+)
+
+predict_log_error(best_lm_log_multi, abalone_test)
+```
+
+# Part III: Model Selection and Prediction
+
+TO-DO
