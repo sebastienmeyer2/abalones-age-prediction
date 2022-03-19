@@ -670,50 +670,18 @@ summary(xgb_multi)
 predict_error(xgb_multi, abalone_test)
 ```
 
-None of the XGBoost models outperform our multiple linear model in terms of RSS, despite going below 5 for the multiple Random Forest model.
+None of the XGBoost models outperform our multiple linear model in terms of RSS.
 
 ## Kernel density estimators
 
 Kernel density estimators are non-parametric methods which attempt to estimate the probability density function of a variable, depending on the chosen kernel and bandwith.
 
 ```{r}
-dat_reg = ksmooth(
+kernel_init <- ksmooth(
     x = abalone_train$height,
     y = abalone_train$rings,
     kernel = "normal",
-    bandwidth = 0.01
-)
-
-ggplot() +
-aes(x = abalone_train$height, y = abalone_train$rings) +
-geom_point() +
-geom_line(aes(x = dat_reg$x, y = dat_reg$y), lwd = 2, color = "red")
-
-lines(dat_reg, lwd = 3, col = "limegreen")
-```
-
-```{r}
-X = abalone_train$height
-Y = abalone_train$rings
-
-kernel_reg1 = ksmooth(x = X,y=Y,kernel = "normal",bandwidth=1)
-kernel_reg2 = ksmooth(x = X,y=Y,kernel = "normal",bandwidth=5)
-kernel_reg3 = ksmooth(x = X,y=Y,kernel = "normal",bandwidth=10)
-plot(X,Y)
-lines(kernel_reg1, lwd=3, col="limegreen",lty=1)
-lines(kernel_reg2, lwd=3, col="red",lty=2)
-lines(kernel_reg3, lwd=3, col="blue",lty=3)
-legend('topright', legend=c("h=0.1", "h=1","h=10"),
-       col=c("limegreen","red", "blue"), lty=1:3, cex=0.8,
-       box.lty=2, box.lwd=2, box.col="green")
-```
-
-```{r}
-dat_reg = ksmooth(
-    x = abalone_train$height,
-    y = abalone_train$rings,
-    kernel = "normal",
-    bandwidth = 0.7,
+    bandwidth = 1,
     x.points = abalone_test$height
 )
 
@@ -728,10 +696,115 @@ plot(
     main = "Predicted density from kernel estimator"
 ) +
 lines(
-    dat_reg,
+    kernel_init,
     lwd = 3,
     col = "limegreen"
 )
 
+y_pred <- kernel_init$y
+y_pred[is.na(y_pred)] <- mean(y_pred, na.rm = TRUE)
 
+print(residual_mean_of_squares(abalone_test$rings, y_pred))
 ```
+
+The following function allows to find the best bandwith thanks to a grid search.
+
+```{r}
+n <- length(abalone_train$height)
+n_cv <- 100
+k <- 5
+cv_lab <- sample(n, n, replace = F) %% k
+h_seq <- seq(0.1, 5, by = 0.01)
+
+cv_err_h <- rep(0, length(h_seq))
+
+for (i_tmp in 1:n_cv) {
+
+    print(i_tmp)
+
+    cv_err_h_tmp <- rep(0, length(h_seq))
+    cv_lab <- sample(n, n, replace = F) %% k
+
+    for (i in seq_len(length(h_seq))) {
+
+        h0 <- h_seq[i]
+        cv_err <- 0
+
+        for (i_cv in 1:k) {
+
+            w_val <- which(cv_lab == (i_cv - 1))
+
+            x_tr <- abalone_train$height[-w_val]
+            y_tr <- abalone_train$rings[-w_val]
+            x_val <- abalone_train$height[w_val]
+            y_val <- abalone_train$rings[w_val]
+
+            kernel_reg <- ksmooth(
+                x = x_tr,
+                y = y_tr,
+                kernel = "normal",
+                bandwidth = h0,
+                x.points = x_val
+            )
+
+            cv_err <- cv_err + mean((y_val[order(x_val)] - kernel_reg$y)^2, na.rm = T)
+
+        }
+
+        cv_err_h_tmp[i] <- cv_err / k
+
+    }
+
+    cv_err_h <- cv_err_h + cv_err_h_tmp
+
+}
+
+cv_err_h <- cv_err_h / n_cv
+
+plot(
+    h_seq,
+    cv_err_h,
+    xlab = "Smoothing Bandwidth",
+    ylab = "CV Error",
+    type = "l",
+    lwd = 4,
+    col = "blue"
+)
+```
+
+```{r}
+# Optimal density estimator
+# h_opt_final <- h_seq[which(cv_err_h == min(cv_err_h))]
+h_opt_final <- 4.52
+
+kernel_init <- ksmooth(
+    x = abalone_train$height,
+    y = abalone_train$rings,
+    kernel = "normal",
+    bandwidth = h_opt_final,
+    x.points = abalone_test$height
+)
+
+plot(
+    abalone_train$height,
+    abalone_train$rings,
+    ylab = "Rings",
+    xlab = "Height",
+    pch = 20,
+    cex = 0.8,
+    type = "p",
+    main = "Predicted density from kernel estimator"
+) +
+lines(
+    kernel_init,
+    lwd = 3,
+    col = "limegreen"
+)
+
+y_pred <- kernel_init$y
+y_pred[is.na(y_pred)] <- mean(y_pred, na.rm = TRUE)
+
+print(residual_mean_of_squares(abalone_test$rings, y_pred))
+```
+
+None of the kernel estimators outperform our multiple linear model in terms of RSS.
