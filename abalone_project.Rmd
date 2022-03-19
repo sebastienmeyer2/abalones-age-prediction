@@ -32,6 +32,7 @@ library(knitr)
 library(ggplot2)
 library(GGally)
 library(ggfortify)
+library(MASS)
 library(rpart)
 library(caret)
 library(lattice)
@@ -85,8 +86,6 @@ abalone$log_rings <- log(abalone$rings)
 abalone$sqrt_log_rings <- sqrt(log(abalone$rings))
 abalone$adulthood <- 1
 abalone$adulthood[abalone$sex == "I"] <- 0
-
-abalone <- feature_engineering(abalone)
 
 # Splitting dataset in train and test using 70/30 method
 indices <- sample(seq_len(nrow(abalone)), size = 0.3 * nrow(abalone))
@@ -497,8 +496,6 @@ durbinWatsonTest(lm_log_multi)
 shapiro.test(lm_log_multi$residuals)
 ```
 
-Regarding the relationship between **rings** and **height**, our simple model will be between the logarithm of **rings** and both **height** and squared **height**.
-
 ```{r}
 summary(lm_log_multi)
 
@@ -553,6 +550,26 @@ best_lm_log_multi <- lm(
 
 predict_log_error(best_lm_log_multi, abalone_test)
 ```
+
+```{r}
+summary(best_lm_log_multi)
+```
+
+```{r}
+autoplot(best_lm_log_multi)
+```
+
+```{r}
+ncvTest(best_lm_log_multi)
+durbinWatsonTest(best_lm_log_multi)
+shapiro.test(best_lm_log_multi$residuals)
+```
+
+```{r}
+acf(best_lm_log_multi$residuals, main = "Auto-correlation function of residuals")
+```
+
+We can see that assumptions **[P2]**, **[P3]** and **[P4]** are no longer satisfied.
 
 # Part III: Model Selection and Prediction
 
@@ -610,6 +627,54 @@ summary(rf_multi)
 predict_error(rf_multi, abalone_test)
 ```
 
+```{r}
+# Random Forest with selected features + grid search
+gridsearch_rf <- expand.grid(
+    .mtry = sqrt(length(10))  # or c(1:10)
+)
+
+params <- expand.grid(
+    ntrees = c(500, 1000),
+    nodesize = c(1, 5)
+)
+
+control_rf <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42),
+    verboseIter = TRUE,
+)
+
+store_maxnode <- vector("list", nrow(params))
+
+for (i in seq_len(nrow(params))) {
+
+    nodesize <- params[i, 2]
+    ntree <- params[i, 1]
+
+    set.seed(42)
+
+    rf_grid <- train(
+        rings ~ length * adulthood + log_length + height + height * adulthood +
+        shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+        log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+        data = abalone_train,
+        method = "rf",
+        importance = TRUE,
+        tuneGrid = gridsearch_rf,
+        trControl = control_rf,
+        ntree = ntree,
+        nodesize = nodesize,
+        verbosity = 0
+    )
+
+    store_maxnode[[i]] <- rf_grid
+
+    print(predict_error(rf_grid, abalone_test))
+
+}
+```
+
 None of the Random Forest models outperform our multiple linear model in terms of RSS, despite going below 5 for the multiple Random Forest model.
 
 ## XGBoost
@@ -622,11 +687,11 @@ xgb_init <- train(
     rings ~.,
     data = abalone_train[, init_feat],
     method = "xgbTree",
-    trControl = trainControl("cv", number = 10),
+    trControl = trainControl("cv", number = 5),
     verbosity = 0
 )
 
-xgb_init$bestTune
+summary(xgb_init)
 
 predict_error(xgb_init, abalone_test)
 ```
@@ -644,7 +709,7 @@ xgb_complete <- train(
     adulthood,
     data = abalone_train,
     method = "xgbTree",
-    trControl = trainControl("cv", number = 10),
+    trControl = trainControl("cv", number = 5),
     verbosity = 0
 )
 
@@ -661,13 +726,48 @@ xgb_multi <- train(
     log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
     data = abalone_train,
     method = "xgbTree",
-    trControl = trainControl("cv", number = 10),
+    trControl = trainControl("cv", number = 5),
     verbosity = 0
 )
 
 summary(xgb_multi)
 
 predict_error(xgb_multi, abalone_test)
+```
+
+```{r}
+# XGBoost with selected features + grid search
+gridsearch_xgb <- expand.grid(
+    eta = c(0.1, 0.3, 0.5),
+    max_depth = c(3, 5, 7),
+    min_child_weight = 1,
+    subsample = 0.8,
+    colsample_bytree = 0.8,
+    nrounds = (1:10) * 200,
+    gamma = 0
+)
+
+control_xgb <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42),
+    verboseIter = TRUE,
+)
+
+xgb_grid <- train(
+    rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train,
+    method = "xgbTree",
+    tuneGrid = gridsearch_xgb,
+    trControl = control_xgb,
+    verbosity = 0
+)
+
+summary(xgb_grid)
+
+predict_error(xgb_grid, abalone_test)
 ```
 
 None of the XGBoost models outperform our multiple linear model in terms of RSS.
@@ -808,3 +908,59 @@ print(residual_mean_of_squares(abalone_test$rings, y_pred))
 ```
 
 None of the kernel estimators outperform our multiple linear model in terms of RSS.
+
+## GLMNet
+
+```{r}
+# glmnet with all initial features
+glm_init <- train(
+    rings ~ .,
+    data = abalone_train[, init_feat],
+    method = "glmnet",
+    trControl = trainControl("cv", number = 10),
+    verbosity = 0
+)
+
+summary(glm_init)
+
+predict_error(glm_init, abalone_test)
+```
+
+```{r}
+# glmnet with all computed features
+glm_complete <- train(
+    rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
+    diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
+    log_height + height * adulthood + height2 * adulthood + log_height * adulthood + shucked_weight
+    + log_shucked_weight + shucked_weight * adulthood + log_shucked_weight * adulthood +
+    viscera_weight + log_viscera_weight + viscera_weight * adulthood + log_viscera_weight *
+    adulthood + whole_weight + log_whole_weight + whole_weight * adulthood + log_whole_weight *
+    adulthood + shell_weight + log_shell_weight + shell_weight * adulthood + log_shell_weight *
+    adulthood,
+    data = abalone_train,
+    method = "glmnet",
+    trControl = trainControl("cv", number = 10),
+    verbosity = 0
+)
+
+summary(glm_complete)
+
+predict_error(glm_complete, abalone_test)
+```
+
+```{r}
+# glmnet with selected features and log transf. of rings
+glm_log_multi <- train(
+    log_rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train,
+    method = "glmnet",
+    trControl = trainControl("cv", number = 10),
+    verbosity = 0
+)
+
+summary(glm_log_multi)
+
+predict_log_error(glm_log_multi, abalone_test)
+```
