@@ -32,6 +32,19 @@ library(knitr)
 library(ggplot2)
 library(GGally)
 library(ggfortify)
+library(rpart)
+library(caret)
+library(lattice)
+library(foreach)
+library(doParallel)
+library(iterators)
+library(parallel)
+library(randomForest)
+library(adabag)
+library(dplyr)
+library(xgboost)
+library(tidyverse)
+library(QBAsyDist)
 ```
 
 Then, we set up global parameters.
@@ -84,6 +97,7 @@ abalone_test <- abalone[indices, ]
 ## Utils
 
 ```{r}
+# RSS and related values
 residual_mean_of_squares <- function(y, y_pred) {
     return(mean((y - y_pred)^2))
 }
@@ -96,11 +110,27 @@ mean_absolute_error <- function(y, y_pred) {
     return(mean(abs(y - y_pred)))
 }
 
+# Utilitary function
 round_to_integer <- function(number) {
     if (number - floor(number) > 0.5) {
         return(ceiling(number))
     }
     return(floor(number))
+}
+
+# Convert predictions of models
+to_rings <- function(vector) {
+  as.double(lapply(vector, round_to_integer))
+}
+
+predict_rings <- function(lm, x_test) {
+    return(to_rings(predict(lm, x_test)))
+}
+
+predict_error <- function(lm, x_test) {
+    return(
+        residual_mean_of_squares(x_test$rings, predict_rings(lm, x_test))
+    )
 }
 
 log_to_rings <- function(vector) {
@@ -382,6 +412,10 @@ From the summary of our linear model, we observe that the $p$-value associated t
 lm_log_intercept <- lm(log_rings ~ 1, data = abalone_train)
 
 anova(lm_log_intercept, lm_log_height, lm_log_height2)
+
+predict_log_error(lm_log_intercept, abalone_test)
+predict_log_error(lm_log_height, abalone_test)
+predict_log_error(lm_log_height2, abalone_test)
 ```
 
 The ANOVA confirms that our linear model is better than the simple intercept value. Then, we want to add new features to our linear model, without losing too much accordance to the assumptions.
@@ -471,7 +505,7 @@ summary(lm_log_multi)
 predict_log_error(lm_log_multi, abalone_test)
 ```
 
-Finally, all the coefficients are significant in this model, and the final RSS on test data is below 5.
+Finally, all the coefficients are significant in this model, and the final RSS on test data is below 5, which is way better than our simple linear models. Recall that for these models, the RSS was approx. 7.
 
 ## Forward feature selection
 
@@ -522,4 +556,182 @@ predict_log_error(best_lm_log_multi, abalone_test)
 
 # Part III: Model Selection and Prediction
 
-TO-DO
+In this section, we compare our multiple linear model with some well-known machine learning models. The comparison is mainly done thanks to the RSS values.
+
+## Random Forest
+
+Random Forest is a well-known classification and regression algorithm. It is based on the average of multiple decision trees which are built using randomly selected features and samples respectively at each tree and node.
+
+```{r}
+# Random Forest with all initial features
+rf_init <- randomForest(
+    rings ~ .,
+    data = abalone_train[, init_feat],
+    importance = TRUE
+)
+
+summary(rf_init)
+
+predict_error(rf_init, abalone_test)
+```
+
+```{r}
+# Random Forest with all computed features
+rf_complete <- randomForest(
+    rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
+    diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
+    log_height + height * adulthood + height2 * adulthood + log_height * adulthood + shucked_weight
+    + log_shucked_weight + shucked_weight * adulthood + log_shucked_weight * adulthood +
+    viscera_weight + log_viscera_weight + viscera_weight * adulthood + log_viscera_weight *
+    adulthood + whole_weight + log_whole_weight + whole_weight * adulthood + log_whole_weight *
+    adulthood + shell_weight + log_shell_weight + shell_weight * adulthood + log_shell_weight *
+    adulthood,
+    data = abalone_train,
+    importance = TRUE
+)
+
+summary(rf_complete)
+
+predict_error(rf_complete, abalone_test)
+```
+
+```{r}
+# Random Forest with selected features
+rf_multi <- randomForest(
+    rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train,
+    importance = TRUE
+)
+
+summary(rf_multi)
+
+predict_error(rf_multi, abalone_test)
+```
+
+None of the Random Forest models outperform our multiple linear model in terms of RSS, despite going below 5 for the multiple Random Forest model.
+
+## XGBoost
+
+XGBoost is also based on decision trees. However, these trees are built sequentially on the errors of the past trees. The final model is a combination of all the trees.
+
+```{r}
+# XGBoost with all initial features
+xgb_init <- train(
+    rings ~.,
+    data = abalone_train[, init_feat],
+    method = "xgbTree",
+    trControl = trainControl("cv", number = 10),
+    verbosity = 0
+)
+
+xgb_init$bestTune
+
+predict_error(xgb_init, abalone_test)
+```
+
+```{r}
+# XGBoost with all computed features
+xgb_complete <- train(
+    rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
+    diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
+    log_height + height * adulthood + height2 * adulthood + log_height * adulthood + shucked_weight
+    + log_shucked_weight + shucked_weight * adulthood + log_shucked_weight * adulthood +
+    viscera_weight + log_viscera_weight + viscera_weight * adulthood + log_viscera_weight *
+    adulthood + whole_weight + log_whole_weight + whole_weight * adulthood + log_whole_weight *
+    adulthood + shell_weight + log_shell_weight + shell_weight * adulthood + log_shell_weight *
+    adulthood,
+    data = abalone_train,
+    method = "xgbTree",
+    trControl = trainControl("cv", number = 10),
+    verbosity = 0
+)
+
+summary(xgb_complete)
+
+predict_error(xgb_complete, abalone_test)
+```
+
+```{r}
+# XGBoost with selected features
+xgb_multi <- train(
+    rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train,
+    method = "xgbTree",
+    trControl = trainControl("cv", number = 10),
+    verbosity = 0
+)
+
+summary(xgb_multi)
+
+predict_error(xgb_multi, abalone_test)
+```
+
+None of the XGBoost models outperform our multiple linear model in terms of RSS, despite going below 5 for the multiple Random Forest model.
+
+## Kernel density estimators
+
+Kernel density estimators are non-parametric methods which attempt to estimate the probability density function of a variable, depending on the chosen kernel and bandwith.
+
+```{r}
+dat_reg = ksmooth(
+    x = abalone_train$height,
+    y = abalone_train$rings,
+    kernel = "normal",
+    bandwidth = 0.01
+)
+
+ggplot() +
+aes(x = abalone_train$height, y = abalone_train$rings) +
+geom_point() +
+geom_line(aes(x = dat_reg$x, y = dat_reg$y), lwd = 2, color = "red")
+
+lines(dat_reg, lwd = 3, col = "limegreen")
+```
+
+```{r}
+X = abalone_train$height
+Y = abalone_train$rings
+
+kernel_reg1 = ksmooth(x = X,y=Y,kernel = "normal",bandwidth=1)
+kernel_reg2 = ksmooth(x = X,y=Y,kernel = "normal",bandwidth=5)
+kernel_reg3 = ksmooth(x = X,y=Y,kernel = "normal",bandwidth=10)
+plot(X,Y)
+lines(kernel_reg1, lwd=3, col="limegreen",lty=1)
+lines(kernel_reg2, lwd=3, col="red",lty=2)
+lines(kernel_reg3, lwd=3, col="blue",lty=3)
+legend('topright', legend=c("h=0.1", "h=1","h=10"),
+       col=c("limegreen","red", "blue"), lty=1:3, cex=0.8,
+       box.lty=2, box.lwd=2, box.col="green")
+```
+
+```{r}
+dat_reg = ksmooth(
+    x = abalone_train$height,
+    y = abalone_train$rings,
+    kernel = "normal",
+    bandwidth = 0.7,
+    x.points = abalone_test$height
+)
+
+plot(
+    abalone_train$height,
+    abalone_train$rings,
+    ylab = "Rings",
+    xlab = "Height",
+    pch = 20,
+    cex = 0.8,
+    type = "p",
+    main = "Predicted density from kernel estimator"
+) +
+lines(
+    dat_reg,
+    lwd = 3,
+    col = "limegreen"
+)
+
+
+```
