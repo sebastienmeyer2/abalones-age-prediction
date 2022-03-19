@@ -1,0 +1,714 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE)
+library(readr)
+library(GGally)
+library(dplyr)
+library(ggfortify)
+library(corrplot)
+library(car)
+library(MASS)
+library(mixlm)
+```
+
+```{r}
+abalone <- read_csv("abalone_data.csv")
+abalone$Sex <- as.factor(abalone$Sex)
+abalone = abalone[is.finite(log(abalone$Height)), ]
+```
+We separate the data into training and testing samples.
+```{r}
+set.seed(42)
+indexes <- sample(1:nrow(abalone), size = 0.3 * nrow(abalone)) 
+abalone_train <- abalone[-indexes,]
+abalone_test <- abalone[indexes,]
+```
+
+We can get the summary of the data as follow:
+```{r}
+summary(abalone)
+```
+
+We look into each variable and drawing boxplot for each variable:
+
+```{r}
+c(mean(abalone$Length),var(abalone$Length),sd(abalone$Length))
+boxplot(abalone$Length)
+```
+
+```{r}
+c(mean(abalone$Height),var(abalone$Height),sd(abalone$Height))
+boxplot(abalone$Height)
+```
+
+```{r}
+c(mean(abalone$Whole_weight),var(abalone$Whole_weight),sd(abalone$Whole_weight))
+boxplot(abalone$Whole_weight)
+```
+
+```{r}
+c(mean(abalone$Shucked_weight),var(abalone$Shucked_weight),sd(abalone$Shucked_weight))
+boxplot(abalone$Shucked_weight)
+```
+
+```{r}
+c(mean(abalone$Viscera_weight),var(abalone$Viscera_weight),sd(abalone$Viscera_weight))
+boxplot(abalone$Viscera_weight)
+```
+
+```{r}
+c(mean(abalone$Shell_weight),var(abalone$Shell_weight),sd(abalone$Shell_weight))
+boxplot(abalone$Shell_weight)
+```
+
+We can see that the distribution of each variables are not symmetric.
+We first start with the simple linear model as in the assumption by the biogists.
+$$age_i=\beta_0+\beta_1*height_i+\epsilon_i$$
+The hypothesis are as follow
+P1: Errors are centered. $\forall i=1,\cdots,n$, $E_{\beta}[\epsilon_i]=0$
+P2: Errors have homosedasctic variance. $\forall i=1,\cdots,n$, $Var_{\beta}[\epsilon_i]=\sigma^2>0$
+P3: Errors are uncorrelated $\forall i=1\neq j$, $cov(\epsilon_i,\epsilon_j)=0$
+P4: Errors are Gaussian. $\forall i=1,\cdots,n$, $\epsilon_i\sim N(0,\sigma^2)$
+
+The scatterplot of the data is as follow. We draw the scatterplot of rings and height for each data, and also draw the scatterplot of rings and height with respect to each sex. 
+
+```{r}
+abalone_plot <- abalone %>% 
+  ggplot() + aes(x = Height, y = Rings, color = Sex) + geom_point(size = 0.4)
+abalone_plot
+abalone_plot  + facet_wrap(~Sex)
+```
+
+From the scatterplot, we see that Rings increases with Height for each gender. However, the relationship of Rings and Height is not linear. There are also outliers in the data for each gender. Thus, the biogists' hypothesis may not be good, and we need other models to describe the relationship between Rings and Height. 
+We start with the simple models of regression as in the biogists' hypothesis.
+
+```{r}
+lm0=lm(Rings~1,data=abalone_train)
+summary(lm0)
+lm1=lm(Rings~Height,data=abalone_train)
+summary(lm1)
+anova(lm0,lm1)
+```
+From the linear model, we can see that the coefficient of Rings and Height is significant at 0.1% significant level. The conclusion of anova test agrees with the significance test. So from the simple model, we can see that there is a positive relationship between Rings and Height.
+The confidence interval of the coefficients and predicted value  is as follow:
+```{r}
+cbind(confint(lm1),coef(lm1))
+```
+
+```{r}
+CIconf=predict(lm1,interval="confidence",level=0.95)
+```
+```{r}
+CIpred=predict(lm1,interval="prediction",level=0.95)
+```
+
+```{r}
+plot(abalone_train$Height,abalone_train$Rings, ylab="Rings",xlab="Height",
+pch=20,cex=0.8,type="p",
+main="Confidence intervals for estimation and prediction")
+matlines(abalone_train$Height,predict(lm1,interval="prediction",level=0.95),lty=c(1,2,2), col=c("red","green","green"))
+```
+```{r}
+plot(abalone_test$Height,abalone_test$Rings, ylab="Rings",xlab="Height",
+pch=20,cex=0.8,type="p",
+main="Confidence intervals for estimation and prediction")
+matlines(abalone_test$Height,predict(lm1,newdata=abalone_test,interval="prediction",level=0.95),lty=c(1,2,2), col=c("red","green","green"))
+```
+We plot the predicted value of Rings for both training set data nad testing set data. We can see that the predicted results are not good, as a lot of points fall outside of the predicted $95%$ confidence interval. 
+
+```{r}
+autoplot(lm1)
+```
+From the residual graph, we can clearly see that the residual is not centered with mean $0$. The assumptions are clearly not satisfied. Data point 2051 and 1417 is clearly an outlier. The first assumption cannot be validated.
+```{r}
+ncvTest(lm1)
+acf(residuals(lm1),main="Auto-correlation plot")
+durbinWatsonTest(lm1)
+shapiro.test(residuals((lm1)))
+```
+Since p-value of ncvTest is smaller than $2.22e-16$, which is smaller than $0.05$, we reject the null hypothesis that the variance is homoscedasticity. The second assumption cannot be validated.
+From the acf plot, we can see that the autocorelations are all larger than the dash line. From the durbin-watson test, the p-value is smaller than $0.05$, so we reject the null hypothesis that the errors are uncorrelated and we cannot validate the third assumption.
+From Shapiro-Wilk normality test, the p-value is smaller than $2.2e-16$, which is smaller than $0.05$. So we reject the null hypothesis that the errors are Gaussian, and we cannot validate the forth assumption.
+
+We can see that the assumptions are not satisfied. So the linear model is not a good model to describe the relationship between rings and height. We need to remove the outliers and transform the data of "Height".
+We plot the graph of $\log(Rings)$ against $Height$, $\log(Rings)$ against $\log(Height)$, and $\sqrt{\log(Rings)}$ against $\log(Height)$
+
+```{r}
+plot(abalone$Height, log(abalone$Rings))
+```
+
+```{r}
+plot(log(abalone$Height),log(abalone$Rings))
+```
+
+```{r}
+plot(log(abalone$Height),sqrt(log(abalone$Rings)))
+```
+We can see that the graph $\sqrt{\log(Rings)}$ against $\log(Height)$ would fit better with a linear model.
+We take logarithm for each variable.
+```{r}
+feature_engineering <- function(abalone_raw, ancova = FALSE){
+  abalone_transform <- abalone_raw[-c(2:3,4:9)]
+  abalone_transform$log_Length = log(abalone_raw$Length)
+  abalone_transform$log_Diameter = log(abalone_raw$Diameter)
+  abalone_transform$log_Height = log(abalone_raw$Height)
+  abalone_transform$log_Shucked_weight = log(abalone_raw$Shucked_weight) 
+  abalone_transform$log_Viscera_weight = log(abalone_raw$Viscera_weight) 
+  abalone_transform$log_Shell_weight = log(abalone_raw$Shell_weight) 
+  abalone_transform$log_Whole_weight = log(abalone_raw$Whole_weight) 
+  abalone_transform$log_Ring = log(abalone_raw$Rings)
+  abalone_transform$sqrt_log_Ring = sqrt(log(abalone_raw$Rings))
+  if(ancova){
+    abalone_transform$Sex[abalone_transform$Sex == 'M'] <- 'F'
+  }
+  
+  abalone_transform
+} 
+abalone_transformed = feature_engineering(abalone)
+```
+
+```{r}
+train_transformed = feature_engineering(abalone_train)
+test_transformed = feature_engineering(abalone_test)
+```
+
+We remove the data for $\log(Height)>4$ and  $\log(Height)<2.5$ to make the four assumptions valid. We do the regression and test for the four assumptions.
+
+```{r}
+data_1 <- train_transformed%>% filter(log_Height<4, log_Height>2.5)
+plot(train_transformed$log_Height,train_transformed$sqrt_log_Ring)
+```
+
+```{r}
+model_height <- data_1%>% lm(formula = sqrt_log_Ring ~ log_Height)
+plot(model_height)
+```
+
+```{r}
+ncvTest(model_height)
+summary(model_height)
+acf(residuals(model_height),main="Auto-correlation plot")
+durbinWatsonTest(model_height)
+shapiro.test(residuals((model_height)))
+```
+We can see there is a positive relationship between $\sqrt{\log(Rings)}$ and $\log(Height)$, and it is significant at $5%$ significant level. 
+We can see from the first graph of autoplot that the mean of residuals are distributed evenly around $0$. So the first assumption is satisfied. 
+Since p-value of ncvTest is $0.073885$, which is greater than $0.05$, we do not reject the null hypothesis that the variance is homoscedasticity. The second assumption can be validated.
+From the acf plot, we can see that the autocorelations are all larger than the dash line. From the durbin-watson test, the p-value is smaller than $0.05$, so we reject the null hypothesis that the errors are uncorrelated and we cannot validate the third assumption.
+From Shapiro-Wilk normality test, the p-value is smaller than $2.2e-16$, which is smaller than $0.05$. So we reject the null hypothesis that the errors are Gaussian, and we cannot validate the forth assumption.
+
+So we can only validate the first and second assumption when only using the data of Rings and Height.
+The final linear model we use is $\sqrt{\log(Rings)}=\beta_0+\beta_1\log(Rings)+\epsilon_t$. 
+$\beta_0=0.730092$, $\beta_1=0.233356$.
+
+```{r}
+cbind(confint(model_height),coef(model_height))
+```
+
+```{r}
+CIconf_model_height=predict(model_height,interval="confidence",level=0.95)
+```
+```{r}
+CIpred_model_height=predict(model_height,interval="prediction",level=0.95)
+```
+
+```{r}
+plot(train_transformed$log_Height,train_transformed$sqrt_log_Ring, ylab="sqrt(log(Rings))",xlab="log(Height)",
+pch=20,cex=0.8,type="p",
+main="Confidence intervals for estimation and prediction")
+matlines(train_transformed$log_Height,predict(model_height,newdata=train_transformed,interval="prediction",level=0.95),lty=c(1,2,2), col=c("red","green","green"))
+```
+```{r}
+plot(test_transformed$log_Height,test_transformed$sqrt_log_Ring, ylab="sqrt(log(Rings))",xlab="log(Height)",
+pch=20,cex=0.8,type="p",
+main="Confidence intervals for estimation and prediction")
+matlines(test_transformed$log_Height,predict(model_height,newdata=test_transformed,interval="prediction",level=0.95),lty=c(1,2,2), col=c("red","green","green"))
+```
+We see that most of the points in the train and test data set are in the $95%$ confidence interval of the predicted values. However, since not all four assunmptions are satisfied, we would need to include more variables to improve the model.
+
+We do the scatter plot of the data using ggpairs.
+```{r}
+ggpairs(abalone, lower = list(continuous = wrap(ggally_points, size = 0.1, mapping = ggplot2::aes(colour=Sex))), columns = 2:9,
+        ) 
+r=round(cor(abalone[,2:9]),2); corrplot(r,method="ellipse")
+```
+```{r}
+ggpairs(abalone_transformed, upper = list(continuous = wrap("cor", family="sans")),lower = list(continuous = wrap(ggally_points, size = 0.1, mapping = ggplot2::aes(colour=Sex))), columns = 2:9) 
+```
+
+We can see that $\sqrt{\log(Rings)} have positive relationship with almost all the $log$ variables. However, some of the variables have very high postive correlation. Thus, we only choose a few variables.
+For the moment, we shall use log_Whole_weight, log_Shell_weight, log_Height, and log_diameter which has the largest correlation with the log_Ring.
+
+```{r}
+model_2 <-  train_transformed %>% lm(formula = sqrt_log_Ring ~  log_Length+log_Diameter+log_Height +log_Shucked_weight+ log_Viscera_weight+log_Shell_weight + log_Whole_weight)
+summary(model_2)
+plot(model_2)
+# Breush-Pagan test the reason why choose model_1
+ncvTest(model_2)
+# Shapiro-Wilk test
+# shapiro.test(residuals(model_0)) 
+# shapiro.test(residuals(model_1)) 
+# remove the point 236 with a cook distance larger than 1, then refit the model
+# data_0 <- data_0[-c(236),]
+# model_0 <-  data_0 %>% lm(formula = log_Ring ~ log_Height + log_Shell_weight + log_Whole_weight + log_Diameter)
+# summary(model_0)
+# plot(model_0)
+```
+
+
+```{r}
+model_1 <-  data_1 %>% lm(formula = sqrt_log_Ring ~  log_Height + log_Shell_weight + log_Whole_weight + log_Diameter)
+summary(model_1)
+plot(model_1)
+```
+
+```{r}
+ncvTest(model_1)
+acf(residuals(model_1),main="Auto-correlation plot")
+durbinWatsonTest(model_1)
+shapiro.test(residuals((model_1)))
+```
+
+```{r}
+anova(model_height,model_1)
+```
+As we can see from the result below, ANOVA suggests that our multilinear model is better than simple linear model. This agrees with the conclusion that all the selected variables are significant at $0.1%$ level.
+We consider add Sex variable in the model.
+```{r}
+# anvoca
+abalone %>% ggplot() + aes(x = Sex, y = Rings, color = Sex) + geom_boxplot(alpha=0.5,) + geom_jitter(width = 0.25)
+```
+
+```{r}
+model_sex= data_1 %>% lm(formula = sqrt_log_Ring ~   Sex)
+summary(model_sex)
+```
+
+We plot the boxplot of Rings with each Sex, and we see that distribution of Rings is similar for Sex F and M, but different from Sex I. We add try to add the interaction between Sex and other variables. We include all the interaction terms first.
+
+```{r}
+#use all the all interaction terms, Sex=I as the baseline
+data_2 = data.frame(data_1)
+data_2$Sex = relevel(data_2$Sex , ref="M")
+model_ancova_1 = data_2 %>% lm(formula = sqrt_log_Ring ~  log_Shell_weight*Sex +log_Height*Sex +  log_Whole_weight*Sex + log_Diameter*Sex)
+summary(model_ancova_1)
+anova(model_ancova_1)
+Anova(model_ancova_1)
+```
+
+```{r}
+data_2$Sex[data_1$Sex == 'M'] <- 'F'
+data_2$Sex = relevel(data_2$Sex , ref="I")
+model_ancova_1_1 = data_2 %>% lm(formula = sqrt_log_Ring ~  log_Shell_weight*Sex +log_Height*Sex +  log_Whole_weight*Sex + log_Diameter*Sex)
+summary(model_ancova_1_1)
+# Question???
+```
+
+```{r}
+#replace use variables with all interactions, Sex=I as the baseline
+data_2 = data.frame(data_1)
+data_2$Sex = relevel(data_2$Sex , ref="M")
+model_ancova_3 = data_2 %>% lm(formula = sqrt_log_Ring ~  log_Length*Sex+log_Diameter*Sex+log_Height*Sex +log_Shucked_weight*Sex+ log_Viscera_weight*Sex+log_Shell_weight *Sex+ log_Whole_weight*Sex)
+summary(model_ancova_3)
+anova(model_ancova_3)
+Anova(model_ancova_3)
+```
+Choose the significant interaction terms
+```{r}
+#replace use variables with significant interactions, Sex=I as the baseline, by anova
+data_2 = data.frame(data_1)
+data_2$Sex = relevel(data_2$Sex , ref="M")
+model_ancova_3_00 = data_2 %>% lm(formula = sqrt_log_Ring ~  log_Length*Sex+log_Diameter+log_Height +log_Shucked_weight*Sex+ log_Viscera_weight+log_Shell_weight*Sex+ log_Whole_weight*Sex)
+summary(model_ancova_3_00)
+anova(model_ancova_3_00)
+Anova(model_ancova_3_00)
+```
+
+
+```{r}
+#replace use variables with significant interactions, Sex=I as the baseline,by Anova
+data_2 = data.frame(data_1)
+data_2$Sex = relevel(data_2$Sex , ref="M")
+model_ancova_3_0 = data_2 %>% lm(formula = sqrt_log_Ring ~  log_Length+log_Diameter+log_Height +log_Shucked_weight*Sex+ log_Viscera_weight+log_Shell_weight+ log_Whole_weight*Sex)
+summary(model_ancova_3_0)
+anova(model_ancova_3_0)
+Anova(model_ancova_3_0)
+```
+
+
+```{r}
+data_2$Sex[data_1$Sex == 'M'] <- 'F'
+data_2$Sex = relevel(data_2$Sex , ref="I")
+model_ancova_3_1 = data_2 %>% lm(formula = sqrt_log_Ring ~  log_Length+log_Diameter+log_Height*Sex +log_Shucked_weight*Sex+ log_Viscera_weight*Sex+log_Shell_weight *Sex+ log_Whole_weight*Sex)
+summary(model_ancova_3_1)
+# Question???
+```
+
+```{r}
+#forward selection start from simplest model
+data_2 = data.frame(data_1)
+mod0= lm(sqrt_log_Ring~1,data=data_2)
+modForw=stepAIC(mod0,scope=list(upper=model_ancova_3,lower=mod0),trace=T,
+     direction=c('forward'),data=data_2)
+modForw
+```
+
+```{r}
+#forward selection start from simplest model
+data_2 = data.frame(data_1)
+mod0= lm(sqrt_log_Ring~1,data=data_2)
+modBacw=stepAIC(modForw,scope=list(upper=model_ancova_3,lower=mod0),trace=T,
+     direction=c('backward'),data=data_2)
+modBacw
+```
+```{r}
+data_2$Sex[data_1$Sex == 'M'] <- 'F'
+data_2$Sex = relevel(data_2$Sex , ref="M")
+mod0= lm(sqrt_log_Ring~1,data=data_2)
+modForw_1=stepAIC(mod0,scope=list(upper=model_ancova_3_1,lower=mod0),trace=T,
+     direction=c('forward'),data=data_2)
+modForw_1
+```
+```{r}
+data_2$Sex[data_1$Sex == 'M'] <- 'F'
+data_2$Sex = relevel(data_2$Sex , ref="M")
+mod0= lm(sqrt_log_Ring~1,data=data_2)
+modBacw_1=stepAIC(model_ancova_3_1,scope=list(upper=model_ancova_3_1,lower=mod0),trace=T,
+     direction=c('backward'),data=data_2)
+modBacw_1
+```
+
+```{r}
+#4 variables 2 interactions, ziru's model
+data_2 = data.frame(data_1)
+data_2$Sex = relevel(data_2$Sex , ref="M")
+model_ancova_2 = data_2 %>% lm(formula = sqrt_log_Ring ~  log_Height+ log_Shell_weight*Sex + log_Whole_weight*Sex + log_Diameter)
+summary(model_ancova_2)
+anova(model_ancova_2)
+Anova(model_ancova_2)
+# Question???
+```
+
+```{r}
+data_2$Sex[data_1$Sex == 'M'] <- 'F'
+data_2$Sex = relevel(data_2$Sex , ref="M")
+model_ancova_2_1 = data_2 %>% lm(formula = sqrt_log_Ring ~  log_Height + log_Shell_weight*Sex + log_Whole_weight*Sex + log_Diameter)
+summary(model_ancova_2_1)
+# Question???
+```
+
+```{r}
+```
+
+
+```{r}
+AIC(model_1, model_ancova_1,model_ancova_2,model_ancova_2_1,model_ancova_3,model_ancova_3_1,model_ancova_3_0,model_ancova_3_00,modForw,modForw_1)
+BIC(model_1, model_ancova_1,model_ancova_2,model_ancova_2_1,model_ancova_3,model_ancova_3_1,model_ancova_3_0,model_ancova_3_00,modForw,modForw_1)
+```
+modForw_1 has the lowest AIC and BIC.
+We calculate the error for each model and compare the errors.
+```{r}
+train_error <- function(lm) mean(lm$residuals^2)
+round_to_integer <- function(number){
+  if (number - floor(number) > 0.5) {
+    return(ceiling(number))
+  }
+  return(floor(number))
+}
+back_to_Ring <- function(vector){
+  vector_inversed = exp(vector^2)
+  as.double(lapply(vector_inversed,round_to_integer))
+}
+loss <- function(y, y_predict){
+   return(mean((y -y_predict)^2))
+  #return(mean(abs(y -y_predict)))
+}
+predict_as_ring <- function(lm, X_test, ancova = FALSE){
+  return( back_to_Ring(predict(lm, feature_engineering(X_test,ancova = ancova))))
+}
+predict_error <- function(lm,X_test,ancova = FALSE) {
+  return(loss(X_test$Rings, predict_as_ring(lm, X_test, ancova = ancova) ) )
+}
+```
+
+```{r}
+predict_error(model_height, abalone_test)
+predict_error(model_1, abalone_test)
+predict_error(model_ancova_1, abalone_test,ancova = TRUE)
+predict_error(model_ancova_1_1, abalone_test,ancova = TRUE)
+predict_error(model_ancova_2, abalone_test,ancova = TRUE)
+predict_error(model_ancova_2_1, abalone_test,ancova = TRUE)
+predict_error(model_ancova_3, abalone_test,ancova = TRUE)
+predict_error(model_ancova_3_1, abalone_test,ancova = TRUE)
+predict_error(model_ancova_3_0, abalone_test,ancova = TRUE)
+predict_error(model_ancova_3_00, abalone_test,ancova = TRUE)
+predict_error(mod0, abalone_test,ancova = TRUE)
+```
+```{r}
+predict_error(model_ancova_1, abalone_test,ancova = FALSE)
+predict_error(model_ancova_2, abalone_test,ancova = FALSE)
+predict_error(model_ancova_3, abalone_test,ancova = FALSE)
+predict_error(mod0, abalone_test,ancova = FALSE)
+```
+
+
+summary:
+model 1: 4 variables
+model 2: all variables
+model_ancova_1: 4 variables, all interactions
+model_ancova_2： 4 variables, 2 interactions (ziru's model)
+model_ancova_3: all variables, all interactions
+model_ancova_3_0: significant interactions by Anova
+model_ancova_3_00: significant interactions by anova
+
+
+
+point 1: Assumption 3 (uncorrelated error) and 4 (errors are Gaussian) are not satisfied. 
+point 2: AIC and BIC models shows simplier models are better, but after regression it shows that the interactions terms are significant. 
+point 3: Does not make a big difference in performance of error for all models
+
+
+Feature selection:
+Use AIC/BIC: modForw_1 all variables, 5 interactions
+Use significance test: Withe Sex interaction terms, include all variables then select by Anova (model_ancova_3_0)
+Use best prediction: Withe Sex interaction terms, include all variables then select by Anova (model_ancova_3_0) (slightly better)
+
+
+
+```{r}
+summary(model_ancova_2_1)
+plot(model_ancova_2_1)
+ncvTest(model_ancova_2_1)
+acf(residuals(model_ancova_2_1),main="Auto-correlation plot")
+durbinWatsonTest(model_ancova_2_1)
+shapiro.test(residuals((model_ancova_2_1)))
+```
+```{r}
+train_error1 <- function(lm) mean(lm$residuals^2)
+round_to_integer1 <- function(number){
+  if (number - floor(number) > 0.5) {
+    return(ceiling(number))
+  }
+  return(floor(number))
+}
+back_to_Ring1 <- function(vector){
+  as.double(lapply(vector,round_to_integer))
+}
+loss1 <- function(y, y_predict){
+   return(mean((y -y_predict)^2))
+  #return(mean(abs(y -y_predict)))
+}
+predict_as_ring1 <- function(lm, X_test){
+  return( back_to_Ring1(predict(lm,X_test)))
+}
+predict_error1 <- function(lm,X_test) {
+  return(loss1(X_test$Rings, predict_as_ring1(lm, X_test) ) )
+}
+```
+
+
+```{r}
+data_2 = data.frame(data_1)
+data_2$Sex = relevel(data_2$Sex , ref="M")
+```
+
+```{r}
+library(randomForest)
+library(adabag)
+rf1=randomForest(Rings~.,abalone_train,importance=TRUE)
+summary(rf1)
+rf2=randomForest(Rings~Height,abalone_train,importance=TRUE)
+summary(rf2)
+rf3=randomForest(Rings ~Length*Sex+Diameter*Sex+Height*Sex +Shucked_weight*Sex+ Viscera_weight*Sex+Shell_weight *Sex+ Whole_weight*Sex,abalone_train,importance=TRUE)
+rf4=randomForest(Rings ~Sex+Length+Diameter+Height +Shucked_weight+ Viscera_weight+Shell_weight + Whole_weight,abalone_train,importance=TRUE)
+rf5=randomForest( sqrt_log_Ring ~  log_Length+log_Diameter+log_Height*Sex +log_Shucked_weight*Sex+ log_Viscera_weight*Sex+log_Shell_weight *Sex+ log_Whole_weight*Sex,data_1,importance=TRUE)
+rf6=randomForest( sqrt_log_Ring ~  log_Length+log_Diameter+log_Height*Sex +log_Shucked_weight*Sex+ log_Viscera_weight*Sex+log_Shell_weight *Sex+ log_Whole_weight*Sex,data_2,importance=TRUE)
+rf7=randomForest( sqrt_log_Ring ~ log_Height + log_Shell_weight*Sex + log_Whole_weight*Sex + log_Diameter,data_1,importance=TRUE)
+```
+
+
+```{r}
+predict_error1(rf1,abalone_test)
+predict_error1(rf2,abalone_test)
+predict_error1(rf3,abalone_test)
+predict_error1(rf4,abalone_test)
+predict_error(rf5,abalone_test)
+predict_error(rf6,abalone_test)
+predict_error(rf7,abalone_test)
+```
+
+```{r}
+library(caret)
+importance1 <- varImp(rf3, scale=FALSE)
+print(importance1)
+importance2 <- varImp(rf4, scale=FALSE)
+print(importance2)
+```
+
+
+
+
+```{r}
+library(xgboost)
+options(warn=-1)
+model1 <- train(
+  Rings ~., data = abalone_train, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+model1$bestTune
+predict_error1(model1,abalone_test)
+```
+
+
+```{r}
+model2 <- train(
+  Rings ~Height, data = abalone_train, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+model2$bestTune
+predict_error1(model2,abalone_test)
+```
+
+
+```{r}
+model3 <- train(
+  Rings ~Length+Diameter*Sex+Height*Sex +Shucked_weight*Sex+ Viscera_weight*Sex+Shell_weight *Sex+ Whole_weight*Sex, data = abalone_train, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+model3$bestTune
+predict_error1(model3,abalone_test)
+
+model4 <- train(
+  Rings ~Length+Diameter+Height +Shucked_weight+ Viscera_weight+Shell_weight + Whole_weight, data = abalone_train, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+model4$bestTune
+predict_error1(model4,abalone_test)
+
+model5 <- train(
+  sqrt_log_Ring ~  log_Length+log_Diameter+log_Height*Sex +log_Shucked_weight*Sex+ log_Viscera_weight*Sex+log_Shell_weight *Sex+ log_Whole_weight*Sex,data=data_1, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+model5$bestTune
+predict_error(model5,abalone_test)
+
+model6 <- train(
+  sqrt_log_Ring ~  log_Length+log_Diameter+log_Height*Sex +log_Shucked_weight*Sex+ log_Viscera_weight*Sex+log_Shell_weight *Sex+ log_Whole_weight*Sex,data=data_2, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+model6$bestTune
+predict_error(model6,abalone_test)
+
+model7 <- train(
+  sqrt_log_Ring ~ log_Height + log_Shell_weight*Sex + log_Whole_weight*Sex + log_Diameter,data=data_1, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+model7$bestTune
+predict_error(model7,abalone_test)
+```
+
+```{r}
+predict_error1(model1,abalone_test)
+predict_error1(model2,abalone_test)
+predict_error1(model3,abalone_test)
+predict_error1(model4,abalone_test)
+predict_error(model5,abalone_test)
+predict_error(model6,abalone_test)
+predict_error(model7,abalone_test)
+```
+
+
+```{r}
+library(glmnet)
+
+g1 <- train(
+  Rings ~., data = abalone_train, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneLength = 10,
+  )
+g1$bestTune
+predict_error1(g1,abalone_test)
+```
+
+
+```{r}
+g2 <- train(
+  Rings ~Height*Sex, data = abalone_train, method = "glmnet",
+  trControl = trainControl("cv", number = 10)
+  )
+g2$bestTune
+predict_error1(g2,abalone_test)
+```
+
+
+```{r}
+g3 <- train(
+  Rings ~Length+Diameter*Sex+Height*Sex +Shucked_weight*Sex+ Viscera_weight*Sex+Shell_weight *Sex+ Whole_weight*Sex, data = abalone_train, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+g3$bestTune
+predict_error1(g3,abalone_test)
+
+g4 <- train(
+  Rings ~Length+Diameter+Height +Shucked_weight+ Viscera_weight+Shell_weight + Whole_weight, data = abalone_train, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+g4$bestTune
+predict_error1(g4,abalone_test)
+
+g5 <- train(
+  sqrt_log_Ring ~  log_Length+log_Diameter+log_Height*Sex +log_Shucked_weight*Sex+ log_Viscera_weight*Sex+log_Shell_weight *Sex+ log_Whole_weight*Sex,data=data_1, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+g5$bestTune
+predict_error(g5,abalone_test)
+
+g6 <- train(
+  sqrt_log_Ring ~  log_Length+log_Diameter+log_Height*Sex +log_Shucked_weight*Sex+ log_Viscera_weight*Sex+log_Shell_weight *Sex+ log_Whole_weight*Sex,data=data_2, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+g6$bestTune
+predict_error(g6,abalone_test)
+
+g7 <- train(
+  sqrt_log_Ring ~ log_Height + log_Shell_weight*Sex + log_Whole_weight*Sex + log_Diameter,data=data_1, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+  )
+g7$bestTune
+predict_error(g7,abalone_test)
+```
+
+```{r}
+predict_error1(g1,abalone_test)
+predict_error1(g2,abalone_test)
+predict_error1(g3,abalone_test)
+predict_error1(g4,abalone_test)
+predict_error(g5,abalone_test)
+predict_error(g6,abalone_test)
+predict_error(g7,abalone_test)
+```
+
+
+
+```{r}
+library(rJava)
+library(extraTrees)
+et1 <- train(
+  Rings ~., data = abalone_train, method = "extraTrees",
+  trControl = trainControl("cv", number = 10)
+  )
+et1$bestTune
+predict_error1(et1,abalone_test)
+```
+```{r}
+et2 <- train(
+  Rings ~Height, data = abalone_train, method = "extraTrees",
+  trControl = trainControl("cv", number = 10)
+  )
+et2$bestTune
+predict_error1(et2,abalone_test)
+```
+
+
