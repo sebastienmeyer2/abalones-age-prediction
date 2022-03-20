@@ -949,6 +949,46 @@ predict_error(glm_complete, abalone_test)
 ```
 
 ```{r}
+set.seed(42)
+# glmnet with all computed features(log)
+glm_log_complete <- train(
+    log_rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
+    diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
+    log_height + height * adulthood + height2 * adulthood + log_height * adulthood + shucked_weight
+    + log_shucked_weight + shucked_weight * adulthood + log_shucked_weight * adulthood +
+    viscera_weight + log_viscera_weight + viscera_weight * adulthood + log_viscera_weight *
+    adulthood + whole_weight + log_whole_weight + whole_weight * adulthood + log_whole_weight *
+    adulthood + shell_weight + log_shell_weight + shell_weight * adulthood + log_shell_weight *
+    adulthood,
+    data = abalone_train,
+    method = "glmnet",
+    trControl = trainControl("cv", number = 10),
+    verbosity = 0
+)
+
+summary(glm_log_complete)
+
+predict_log_error(glm_log_complete, abalone_test)
+```
+
+```{r}
+# glmnet with selected features
+glm_multi <- train(
+    rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train,
+    method = "glmnet",
+    trControl = trainControl("cv", number = 10),
+    verbosity = 0
+)
+
+summary(glm_multi)
+
+predict_error(glm_multi, abalone_test)
+```
+
+```{r}
 # glmnet with selected features and log transf. of rings
 glm_log_multi <- train(
     log_rings ~ length * adulthood + log_length + height + height * adulthood +
