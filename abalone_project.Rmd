@@ -581,6 +581,8 @@ Random Forest is a well-known classification and regression algorithm. It is bas
 
 ```{r}
 # Random Forest with all initial features
+set.seed(42)
+
 rf_init <- randomForest(
     rings ~ .,
     data = abalone_train[, init_feat],
@@ -594,6 +596,8 @@ predict_error(rf_init, abalone_test)
 
 ```{r}
 # Random Forest with all computed features
+set.seed(42)
+
 rf_complete <- randomForest(
     rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
     diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
@@ -614,6 +618,8 @@ predict_error(rf_complete, abalone_test)
 
 ```{r}
 # Random Forest with selected features
+set.seed(42)
+
 rf_multi <- randomForest(
     rings ~ length * adulthood + log_length + height + height * adulthood +
     shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
@@ -630,7 +636,7 @@ predict_error(rf_multi, abalone_test)
 ```{r}
 # Random Forest with selected features + grid search
 gridsearch_rf <- expand.grid(
-    .mtry = sqrt(length(10))  # or c(1:10)
+    .mtry = c(2:5)  # or sqrt(length(10))
 )
 
 params <- expand.grid(
@@ -683,11 +689,19 @@ XGBoost is also based on decision trees. However, these trees are built sequenti
 
 ```{r}
 # XGBoost with all initial features
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
 xgb_init <- train(
     rings ~.,
     data = abalone_train[, init_feat],
     method = "xgbTree",
-    trControl = trainControl("cv", number = 5),
+    trControl = ctrl,
     verbosity = 0
 )
 
@@ -698,6 +712,14 @@ predict_error(xgb_init, abalone_test)
 
 ```{r}
 # XGBoost with all computed features
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
 xgb_complete <- train(
     rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
     diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
@@ -709,7 +731,7 @@ xgb_complete <- train(
     adulthood,
     data = abalone_train,
     method = "xgbTree",
-    trControl = trainControl("cv", number = 5),
+    trControl = ctrl,
     verbosity = 0
 )
 
@@ -720,13 +742,21 @@ predict_error(xgb_complete, abalone_test)
 
 ```{r}
 # XGBoost with selected features
+set.seed(42)
+
+ctrl = trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
 xgb_multi <- train(
     rings ~ length * adulthood + log_length + height + height * adulthood +
     shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
     log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
     data = abalone_train,
     method = "xgbTree",
-    trControl = trainControl("cv", number = 5),
+    trControl = ctrl,
     verbosity = 0
 )
 
@@ -737,6 +767,8 @@ predict_error(xgb_multi, abalone_test)
 
 ```{r}
 # XGBoost with selected features + grid search
+set.seed(42)
+
 gridsearch_xgb <- expand.grid(
     eta = c(0.1, 0.3, 0.5),
     max_depth = c(3, 5, 7),
@@ -747,7 +779,7 @@ gridsearch_xgb <- expand.grid(
     gamma = 0
 )
 
-control_xgb <- trainControl(
+ctrl <- trainControl(
     method = "cv",
     number = 5,
     seeds = set.seed(42),
@@ -761,7 +793,7 @@ xgb_grid <- train(
     data = abalone_train,
     method = "xgbTree",
     tuneGrid = gridsearch_xgb,
-    trControl = control_xgb,
+    trControl = ctrl,
     verbosity = 0
 )
 
@@ -810,6 +842,8 @@ print(residual_mean_of_squares(abalone_test$rings, y_pred))
 The following function allows to find the best bandwith thanks to a grid search.
 
 ```{r}
+set.seed(42)
+
 n <- length(abalone_train$height)
 n_cv <- 100
 k <- 5
@@ -913,11 +947,19 @@ None of the kernel estimators outperform our multiple linear model in terms of R
 
 ```{r}
 # glmnet with all initial features
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
 glm_init <- train(
     rings ~ .,
     data = abalone_train[, init_feat],
     method = "glmnet",
-    trControl = trainControl("cv", number = 10),
+    trControl = ctrl,
     verbosity = 0
 )
 
@@ -928,6 +970,14 @@ predict_error(glm_init, abalone_test)
 
 ```{r}
 # glmnet with all computed features
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
 glm_complete <- train(
     rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
     diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
@@ -939,7 +989,7 @@ glm_complete <- train(
     adulthood,
     data = abalone_train,
     method = "glmnet",
-    trControl = trainControl("cv", number = 10),
+    trControl = ctrl,
     verbosity = 0
 )
 
@@ -949,8 +999,15 @@ predict_error(glm_complete, abalone_test)
 ```
 
 ```{r}
-set.seed(42)
 # glmnet with all computed features(log)
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
 glm_log_complete <- train(
     log_rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
     diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
@@ -962,7 +1019,7 @@ glm_log_complete <- train(
     adulthood,
     data = abalone_train,
     method = "glmnet",
-    trControl = trainControl("cv", number = 10),
+    trControl = ctrl,
     verbosity = 0
 )
 
@@ -973,13 +1030,21 @@ predict_log_error(glm_log_complete, abalone_test)
 
 ```{r}
 # glmnet with selected features
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
 glm_multi <- train(
     rings ~ length * adulthood + log_length + height + height * adulthood +
     shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
     log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
     data = abalone_train,
     method = "glmnet",
-    trControl = trainControl("cv", number = 10),
+    trControl = ctrl,
     verbosity = 0
 )
 
@@ -990,13 +1055,21 @@ predict_error(glm_multi, abalone_test)
 
 ```{r}
 # glmnet with selected features and log transf. of rings
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
 glm_log_multi <- train(
     log_rings ~ length * adulthood + log_length + height + height * adulthood +
     shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
     log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
     data = abalone_train,
     method = "glmnet",
-    trControl = trainControl("cv", number = 10),
+    trControl = ctrl,
     verbosity = 0
 )
 
