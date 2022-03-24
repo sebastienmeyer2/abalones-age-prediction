@@ -1,0 +1,1079 @@
+---
+title: "Abalones Age Prediction"
+author: "Shiqi Liu, Sébastien Meyer, Ziru Niu"
+date: ""
+output:
+    html_document:
+        code_folding: hide
+        toc: true
+        toc_float: true
+        df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.align = "center", warning = FALSE, eval = TRUE, tidy = FALSE)
+```
+
+# Introduction
+
+Abalones are one type of reef-dwelling marine snails. It is difficult to tell the ages of abalones because their shellsizes not only depend on how old they are, but also depend on the availability of food. The study of age is usually by obtaining a stained sample of the shell and looking at the number of rings through a microscope. We are interested in using some of abalones physical measurements, especially the height measurement to predict their ages. Biologists believe that a simple linear regression model with normal error assumption is appropriate to describe the relationship between the height of abalones and their ages. In particular, that a larger height is associated with an older age.
+
+The dataset and its description are available at https://archive.ics.uci.edu/ml/datasets/Abalone.
+
+## Global libraries and parameters
+
+Firstly, we import the necessary libraries.
+
+```{r}
+library(readr)
+library(carData)
+library(car)
+library(knitr)
+library(ggplot2)
+library(GGally)
+library(ggfortify)
+library(MASS)
+library(rpart)
+library(caret)
+library(lattice)
+library(foreach)
+library(doParallel)
+library(iterators)
+library(parallel)
+library(randomForest)
+library(adabag)
+library(dplyr)
+library(xgboost)
+library(tidyverse)
+library(QBAsyDist)
+```
+
+Then, we set up global parameters.
+
+```{r}
+set.seed(42)
+```
+
+## Importing the data
+
+```{r}
+# Read the csv file
+abalone <- read.csv2("abalone_data.csv", header = T, sep = ",")
+
+# Lowercase column names
+names(abalone) <- tolower(names(abalone))
+init_feat <- names(abalone)
+
+# Data types
+abalone$sex <- as.factor(abalone$sex)
+abalone$whole_weight <- as.double(abalone$whole_weight)
+abalone$shucked_weight <- as.double(abalone$shucked_weight)
+abalone$viscera_weight <- as.double(abalone$viscera_weight)
+abalone$shell_weight <- as.double(abalone$shell_weight)
+
+# Feature engineering
+abalone <- abalone[is.finite(log(abalone$height)), ]
+
+abalone$log_length <- log(abalone$length)
+abalone$log_diameter <- log(abalone$diameter)
+abalone$height2 <- abalone$height^2
+abalone$log_height <- log(abalone$height)
+abalone$log_shucked_weight <- log(abalone$shucked_weight)
+abalone$log_viscera_weight <- log(abalone$viscera_weight)
+abalone$log_shell_weight <- log(abalone$shell_weight)
+abalone$log_whole_weight <- log(abalone$whole_weight)
+abalone$log_rings <- log(abalone$rings)
+abalone$sqrt_log_rings <- sqrt(log(abalone$rings))
+abalone$adulthood <- 1
+abalone$adulthood[abalone$sex == "I"] <- 0
+
+# Splitting dataset in train and test using 70/30 method
+indices <- sample(seq_len(nrow(abalone)), size = 0.3 * nrow(abalone))
+abalone_train <- abalone[-indices, ]
+abalone_test <- abalone[indices, ]
+```
+
+## Utils
+
+```{r}
+# RSS and related values
+residual_mean_of_squares <- function(y, y_pred) {
+    return(mean((y - y_pred)^2))
+}
+
+residual_sum_of_squares <- function(y, y_pred) {
+    return(sum((y - y_pred)^2))
+}
+
+mean_absolute_error <- function(y, y_pred) {
+    return(mean(abs(y - y_pred)))
+}
+
+# Utilitary function
+round_to_integer <- function(number) {
+    if (number - floor(number) > 0.5) {
+        return(ceiling(number))
+    }
+    return(floor(number))
+}
+
+# Convert predictions of models
+to_rings <- function(vector) {
+  as.double(lapply(vector, round_to_integer))
+}
+
+predict_rings <- function(lm, x_test) {
+    return(to_rings(predict(lm, x_test)))
+}
+
+predict_error <- function(lm, x_test) {
+    return(
+        residual_mean_of_squares(x_test$rings, predict_rings(lm, x_test))
+    )
+}
+
+log_to_rings <- function(vector) {
+    vector_inversed <- exp(vector)
+    as.double(lapply(vector_inversed, round_to_integer))
+}
+
+predict_log_to_rings <- function(lm, x_test, ancova = FALSE) {
+    return(log_to_rings(predict(lm, x_test, ancova = ancova)))
+}
+
+predict_log_error <- function(lm, x_test, ancova = FALSE) {
+    return(
+      residual_mean_of_squares(x_test$rings, predict_log_to_rings(lm, x_test, ancova = ancova))
+    )
+}
+
+sqrt_log_to_rings <- function(vector) {
+  vector_inversed <- exp(vector^2)
+  as.double(lapply(vector_inversed, round_to_integer))
+}
+
+predict_sqrt_log_to_rings <- function(lm, x_test, ancova = FALSE) {
+    return(sqrt_log_to_rings(predict(lm, x_test, ancova = ancova)))
+}
+
+predict_sqrt_log_error <- function(lm, x_test, ancova = FALSE) {
+    return(
+      residual_mean_of_squares(x_test$rings, predict_sqrt_log_to_rings(lm, x_test, ancova = ancova))
+    )
+}
+```
+
+# Parts I & II: EDA and Model validation & ANOVA/ANCOVA
+
+## Dataset description
+
+```{r}
+str(abalone[, init_feat])
+```
+
+In the Abalone dataset, we have the following variables:
+
+- **sex**: *factor* corresponding to the sex of the snail, which can be male (M), female (F) and infant (I)
+- **length**: *integer* corresponding to the length of the shell
+- **diameter**: *integer* corresponding to the diameter of the shell, perpendicular to length
+- **height**: *integer* corresponding to the height of the meat inside the shell
+- **whole_weight**: *double* corresponding to the weight of the whole abalone
+- **shucked_weight**: *double* corresponding to the weight of the meat inside the shell
+- **viscera_weight**: *double* corresponding to the weight of the gut after bleeding
+- **shell_weight**: *double* corresponding to the weight of the shell alone
+- **rings**: *integer* corresponding to the number of rings on the shell, +1.5 gives the age of the abalone in years
+
+```{r}
+summary(abalone[, init_feat])
+```
+
+From this summary, we can deduce that the data points that we have are evenly distributed among the **sex** variable. Regarding the dependent variable **rings**, we observe that values range from 1 to 29, which correspond to ages from 2.5 to 30.5 years. Median and mean are relatively close, with a small skew for the dependent variable.
+
+```{r}
+# Correlation and distribution plots
+ggpairs(
+    abalone[, init_feat],
+    aes(color = sex, alpha = 1),
+    title = "Scatterplot and correlation for abalone dataset",
+    lower = list(combo = wrap("facethist", binwidth = 5)),
+    upper = list(continuous = wrap(ggally_cor, size = 2))
+) +
+theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = -90, vjust = 0.5),
+    strip.text.x = element_text(size = 6),
+    strip.text.y = element_text(size = 5)
+)
+```
+
+We recall from the introduction that biologists believe there is a linear dependence between the **height** of abalones and their age. From the last line of the plot, we observe that there is indeed a correlation between large height values and large numbers of rings, however a simple linear dependence does not seem clear.
+
+Secondly, there are very high correlations between the different explicative variables. For instance, there is a correlation of 0.987 between diameter and length, which can make the explanation of our models more difficult.
+
+In addition, the separation between infants and adults is clear in almost all plots. However, distributions of variables for both male and female abalones are very similar. This indicates that the major difference is between infants and adults and might be a better variable for modeling.
+
+## Simple linear model
+
+The simple linear model can be described as follows, where $Y$ is associated to **rings** and $X$ is associated to **height** and **intercept**: $Y = X \beta + \epsilon$. Under the normal error assumption, we have to check if the following properties are indeed verified:
+
+**[P1]** Errors are centered: $\forall i = 1..n, \mathbb{E}_{\beta}(\epsilon_i) = 0$.
+
+Possible assessment:
+
+- The mean curve in the *Residuals vs. Fitted* plot should be close to zero and straight
+
+**[P2]** Errors have homoscedastic variance: $\forall i = 1..n, \text{Var}_{\beta}(\epsilon_i) = \sigma^2$.
+
+Possible assessments:
+
+- The *Scale-Location* plot shows the repartition of residuals among observations, which should be uniform
+
+- The *Breush-Pagan* test allows to assess the $\mathcal{H}_0$ hypothesis of homoscedasticity, which is rejected if the $p$-value is smaller than 0.05
+
+In particular, a square or log transformation of the dependent variable $Y$ might improve the model in case the homoscedastic assumption is rejected.
+
+**[P3]** Errors are uncorrelated: $\forall i \neq j, \text{Cov}(\epsilon_i, \epsilon_j) = 0$.
+
+Possible assessments:
+
+- The *auto-correlation* function should not exceed the confidence interval around 0
+
+- The *Durbin-Watson* test allows to assess the $\mathcal{H}_0$ hypothesis of uncorrelation, which is rejected if the $p$-value is smaller than 0.05
+
+**[P4]** Errors are gaussian: $\forall i = 1..n, \epsilon_i \hookrightarrow \mathbb{N}(0, \sigma^2)$.
+
+Possible assessments:
+
+- The *Q-Q* plot shows the comparison between the quantiles of the standardized residuals and a true normal distribution, which should be close enough
+
+- The *Shapiro-Wilk* test allows to assess the $\mathcal{H}_0$ hypothesis of gaussianity, which is rejected if the $p$-value is smaller than 0.05
+
+```{r}
+# Simple linear model using only height
+lm_height <- lm(rings ~ height, data = abalone_train)
+
+# Remove outliers
+abalone_train$cook_dist <- cooks.distance(lm_height)
+abalone_train <- subset(abalone_train, cook_dist < 0.1)
+lm_height <- lm(rings ~ height, data = abalone_train)
+```
+
+```{r}
+plot(
+    abalone_train$height,
+    abalone_train$rings,
+    ylab = "Rings",
+    xlab = "Height",
+    pch = 20,
+    cex = 0.8,
+    type = "p",
+    main = "Confidence intervals for the simple linear model"
+) +
+matlines(
+    abalone_train$height,
+    predict(lm_height, interval = "prediction", level = 0.95),
+    lty = c(1, 2, 2),
+    col = c("red", "green", "green")
+)
+```
+
+From the fitted line and scatter plot, we can deduce that the linear model might not be sufficient to describe the relationship between **height** and **rings** variables.
+
+First, we assess the initial assumptions for the linear regression of **rings** using **height** only.
+
+```{r}
+autoplot(lm_height)
+```
+
+**[P1]** It is clear that, for higher values of **rings**, the residuals are negative in average. This shows that the model predicts too high values and indicates for a transformation of the dependent variable.
+
+**[P2]** Below, we show the *Breush-Pagan* test's $p$-value. The $p$-value is 2.22e-16, therefore we can reject $\mathcal{H}_0$. In addition, we see from the plot that the residuals are clearly not equally spread.
+
+```{r}
+# Breush-Pagan test
+ncvTest(lm_height)
+```
+
+**[P3]** Below, we show the $auto-correlation$ plot as well as the *Durbin-Watson* test's $p$-value. The $p$-value is negligeable, therefore we can reject $\mathcal{H}_0$. Moreover, the auto-correlation function of residuals is clearly not close to zero.
+
+```{r}
+# Auto-correlation function
+acf(lm_height$residuals, main = "Auto-correlation function of residuals")
+```
+
+```{r}
+# Durbin-Watson test
+durbinWatsonTest(lm_height)
+```
+
+**[P4]** Below, we show the *Shapiro-Wilk* test's $p$-value. The $p$-value is negligeable, therefore we can reject $\mathcal{H}_0$. In addition, the plot shows that there is a clear deviation from a normal distribution for higher quantiles.
+
+```{r}
+# Shapiro-Wilk test
+shapiro.test(lm_height$residuals)
+```
+
+All in all, from our assumptions, only **[P1]** seems to be verified to a certain extent. All **[P2]**, **[P3]** and **[P4]** are not verified. From our observations, a transformation of the dependent variable $Y$ might improve our results. The fact that the predictions made by our model are larger than actual values, we will thus try the following transformation: $\log(Y)$. The model is now: $\log(Y) = X \beta + \epsilon$.
+
+## Linear model w. log transformation of $Y$
+
+```{r}
+# Linear model using only height w. log transformation
+lm_log_height <- lm(log_rings ~ height, data = abalone_train)
+```
+
+Finally, we perform our tests again, with our modified model.
+
+```{r}
+autoplot(lm_log_height)
+```
+
+**[P1]** The results are not perfect, with an inversed U-shape. This might indicate a relationship with square of **height**.
+
+**[P2]** Below, we show the *Breush-Pagan* test's $p$-value. The plot is much better than for the simple linear model, with a red curve close to 1. Also, the $p$-value is 0.72724, which is larger than 0.05 and $\mathcal{H}_0$ cannot be rejected.
+
+```{r}
+# Breush-Pagan test
+ncvTest(lm_log_height)
+```
+
+**[P3]** Below, we show the $auto-correlation$ plot as well as the *Durbin-Watson* test's $p$-value. The auto-correlation is very similar to the simple linear model.
+
+```{r}
+# Auto-correlation function
+acf(lm_log_height$residuals, main = "Auto-correlation function of residuals")
+```
+
+```{r}
+# Durbin-Watson test
+durbinWatsonTest(lm_log_height)
+```
+
+**[P4]** Below, we show the *Shapiro-Wilk* test's $p$-value. The plot is much closer to the normal distribution with our log transformation of the dependent variable. However, the $p$-value of the test is still smaller than 0.05.
+
+```{r}
+# Shapiro-Wilk test
+shapiro.test(lm_log_height$residuals)
+```
+
+Therefore, we see that **[P2]** and **[P4]** are now verified, at least to a certain extent. With our new model, **[P3]** is still not verified.
+
+We will now try out the following model: $\log(Y) = X \beta + \epsilon$ where $X$ contains the square of **height** plus **height**.
+
+```{r}
+# Linear model using only height w. log transformation and square of height
+lm_log_height2 <- lm(log_rings ~ height + height2, data = abalone_train)
+```
+
+```{r}
+autoplot(lm_log_height2)
+```
+
+**[P1]** The expectation of residuals is getting closer to zero again.
+
+**[P2]** Below, we show the *Breush-Pagan* test's $p$-value. Results are slightly better with this model.
+
+```{r}
+# Breush-Pagan test
+ncvTest(lm_log_height2)
+```
+
+**[P3]** Below, we show the $auto-correlation$ plot as well as the *Durbin-Watson* test's $p$-value. Results are very similar to the model containing only the **height**.
+
+```{r}
+# Auto-correlation function
+acf(lm_log_height2$residuals, main = "Auto-correlation function of residuals")
+```
+
+```{r}
+# Durbin-Watson test
+durbinWatsonTest(lm_log_height2)
+```
+
+**[P4]** Below, we show the *Shapiro-Wilk* test's $p$-value. Again, results are very similar here, with a distance between true and predicted quantiles getting larger at the extremes.
+
+```{r}
+# Shapiro-Wilk test
+shapiro.test(lm_log_height2$residuals)
+```
+
+Regarding the relationship between **rings** and **height**, our simple model will be between the logarithm of **rings** and both **height** and squared **height**.
+
+```{r}
+summary(lm_log_height2)
+```
+
+We can finally compare our different models using ANOVA.
+
+From the summary of our linear model, we observe that the $p$-value associated to the intercept, **height** and squared **height** are close to zero, thus we can say that there is a statistically significant relationship between **log(rings)** and **height**, squared **height**.
+
+```{r}
+lm_log_intercept <- lm(log_rings ~ 1, data = abalone_train)
+
+anova(lm_log_intercept, lm_log_height, lm_log_height2)
+
+predict_log_error(lm_log_intercept, abalone_test)
+predict_log_error(lm_log_height, abalone_test)
+predict_log_error(lm_log_height2, abalone_test)
+```
+
+The ANOVA confirms that our linear model is better than the simple intercept value. Then, we want to add new features to our linear model, without losing too much accordance to the assumptions.
+
+## Multiple linear model
+
+Below, we show a graph gathering different transformations of our features leading to a particularly good fit between features and $log(**rings**)$.
+
+```{r}
+# Correlation and distribution plots w. log transformation
+log_cols <- c(
+    "sex", "log_length", "log_diameter", "height", "height2", "log_whole_weight",
+    "log_shucked_weight", "log_viscera_weight", "log_shell_weight",
+    "log_rings"
+)
+
+ggpairs(
+    abalone[, log_cols],
+    aes(color = sex, alpha = 1),
+    title = "Scatterplot and correlation for abalone dataset - log transf.",
+    lower = list(combo = wrap("facethist", binwidth = 5)),
+    upper = list(continuous = wrap(ggally_cor, size = 2))
+) +
+theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = -90, vjust = 0.5),
+    strip.text.x = element_text(size = 6),
+    strip.text.y = element_text(size = 5)
+)
+```
+
+```{r}
+# Add log of some of the features
+lm_log_multi <- lm(
+    log_rings ~ log_length + height + height2 + log_shucked_weight + log_whole_weight +
+    log_shell_weight + adulthood,
+    data = abalone_train
+)
+
+# Remove outliers
+abalone_train$cook_dist_multi <- cooks.distance(lm_log_multi)
+abalone_train_multi <- subset(abalone_train, cook_dist_multi < 0.1)
+lm_log_multi <- lm(
+    log_rings ~ log_length + height + height2 + log_shucked_weight + log_whole_weight +
+    log_shell_weight + adulthood,
+    data = abalone_train_multi
+)
+```
+
+```{r}
+autoplot(lm_log_multi)
+```
+
+**[P1]** The residuals are not equally distributed, but the mean is close to zero with a small U-shape.
+
+**[P2]** Standardized residuals are equally distributed but the line is not straight. The $p$-value indicates that $\mathcal{H}_0$ is rejected.
+
+```{r}
+# Breush-Pagan test
+ncvTest(lm_log_multi)
+```
+
+**[P3]** Below, we show the $auto-correlation$ plot as well as the *Durbin-Watson* test's $p$-value. In terms of autocorrelation, the values are largely smaller than for our simple linear model but still above the confidence interval.
+
+```{r}
+# Auto-correlation function
+acf(lm_log_multi$residuals, main = "Auto-correlation function of residuals")
+```
+
+```{r}
+# Durbin-Watson test
+durbinWatsonTest(lm_log_multi)
+```
+
+**[P4]** Below, we show the *Shapiro-Wilk* test's $p$-value. Again, results are very similar here, with a distance between true and predicted quantiles getting larger at the extremes.
+
+```{r}
+# Shapiro-Wilk test
+shapiro.test(lm_log_multi$residuals)
+```
+
+```{r}
+summary(lm_log_multi)
+
+predict_log_error(lm_log_multi, abalone_test)
+```
+
+Finally, all the coefficients are significant in this model, and the final RSS on test data is below 5, which is way better than our simple linear models. Recall that for these models, the RSS was approx. 7.
+
+## Forward feature selection
+
+In this section, we perform a forward feature selection. We use a model consisting of all known features and interaction terms with the **adulthood** feature. Then, the model performs a selection of the features based on results on the training set. The final best model is summed up below.
+
+```{r}
+# Forward selection start from simplest model
+abalone_train_copy <- data.frame(abalone_train)
+lm_log_intercept <- lm(log_rings ~ 1, data = abalone_train_copy)
+
+lm_complete <- lm(
+    log_rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
+    diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
+    log_height + height * adulthood + height2 * adulthood + log_height * adulthood + shucked_weight
+    + log_shucked_weight + shucked_weight * adulthood + log_shucked_weight * adulthood +
+    viscera_weight + log_viscera_weight + viscera_weight * adulthood + log_viscera_weight *
+    adulthood + whole_weight + log_whole_weight + whole_weight * adulthood + log_whole_weight *
+    adulthood + shell_weight + log_shell_weight + shell_weight * adulthood + log_shell_weight *
+    adulthood,
+    data = abalone_train_copy
+)
+
+lm_fwd <- stepAIC(
+    lm_log_intercept,
+    scope = list(upper = lm_complete, lower = lm_log_intercept),
+    trace = T,
+    direction = c("forward"),
+    data = abalone_train_copy
+)
+
+summary(lm_fwd)
+
+predict_log_error(lm_fwd, abalone_test)
+```
+
+This method allowed us to diminish the RSS even further. Below, we present the best model in terms of RSS that we manually computed.
+
+```{r}
+best_lm_log_multi <- lm(
+    log_rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train
+)
+
+predict_log_error(best_lm_log_multi, abalone_test)
+```
+
+```{r}
+summary(best_lm_log_multi)
+```
+
+```{r}
+autoplot(best_lm_log_multi)
+```
+
+```{r}
+ncvTest(best_lm_log_multi)
+durbinWatsonTest(best_lm_log_multi)
+shapiro.test(best_lm_log_multi$residuals)
+```
+
+```{r}
+acf(best_lm_log_multi$residuals, main = "Auto-correlation function of residuals")
+```
+
+We can see that assumptions **[P2]**, **[P3]** and **[P4]** are no longer satisfied.
+
+# Part III: Model Selection and Prediction
+
+In this section, we compare our multiple linear model with some well-known machine learning models. The comparison is mainly done thanks to the RSS values.
+
+## Random Forest
+
+Random Forest is a well-known classification and regression algorithm. It is based on the average of multiple decision trees which are built using randomly selected features and samples respectively at each tree and node.
+
+```{r}
+# Random Forest with all initial features
+set.seed(42)
+
+rf_init <- randomForest(
+    rings ~ .,
+    data = abalone_train[, init_feat],
+    importance = TRUE
+)
+
+summary(rf_init)
+
+predict_error(rf_init, abalone_test)
+```
+
+```{r}
+# Random Forest with all computed features
+set.seed(42)
+
+rf_complete <- randomForest(
+    rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
+    diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
+    log_height + height * adulthood + height2 * adulthood + log_height * adulthood + shucked_weight
+    + log_shucked_weight + shucked_weight * adulthood + log_shucked_weight * adulthood +
+    viscera_weight + log_viscera_weight + viscera_weight * adulthood + log_viscera_weight *
+    adulthood + whole_weight + log_whole_weight + whole_weight * adulthood + log_whole_weight *
+    adulthood + shell_weight + log_shell_weight + shell_weight * adulthood + log_shell_weight *
+    adulthood,
+    data = abalone_train,
+    importance = TRUE
+)
+
+summary(rf_complete)
+
+predict_error(rf_complete, abalone_test)
+```
+
+```{r}
+# Random Forest with selected features
+set.seed(42)
+
+rf_multi <- randomForest(
+    rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train,
+    importance = TRUE
+)
+
+summary(rf_multi)
+
+predict_error(rf_multi, abalone_test)
+```
+
+```{r}
+# Random Forest with selected features + grid search
+gridsearch_rf <- expand.grid(
+    .mtry = c(2:5)  # or sqrt(length(10))
+)
+
+params <- expand.grid(
+    ntrees = c(500, 1000),
+    nodesize = c(1, 5)
+)
+
+control_rf <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42),
+    verboseIter = TRUE,
+)
+
+store_maxnode <- vector("list", nrow(params))
+
+for (i in seq_len(nrow(params))) {
+
+    nodesize <- params[i, 2]
+    ntree <- params[i, 1]
+
+    set.seed(42)
+
+    rf_grid <- train(
+        rings ~ length * adulthood + log_length + height + height * adulthood +
+        shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+        log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+        data = abalone_train,
+        method = "rf",
+        importance = TRUE,
+        tuneGrid = gridsearch_rf,
+        trControl = control_rf,
+        ntree = ntree,
+        nodesize = nodesize,
+        verbosity = 0
+    )
+
+    store_maxnode[[i]] <- rf_grid
+
+    print(predict_error(rf_grid, abalone_test))
+
+}
+```
+
+None of the Random Forest models outperform our multiple linear model in terms of RSS, despite going below 5 for the multiple Random Forest model.
+
+## XGBoost
+
+XGBoost is also based on decision trees. However, these trees are built sequentially on the errors of the past trees. The final model is a combination of all the trees.
+
+```{r}
+# XGBoost with all initial features
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
+xgb_init <- train(
+    rings ~.,
+    data = abalone_train[, init_feat],
+    method = "xgbTree",
+    trControl = ctrl,
+    verbosity = 0
+)
+
+summary(xgb_init)
+
+predict_error(xgb_init, abalone_test)
+```
+
+```{r}
+# XGBoost with all computed features
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
+xgb_complete <- train(
+    rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
+    diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
+    log_height + height * adulthood + height2 * adulthood + log_height * adulthood + shucked_weight
+    + log_shucked_weight + shucked_weight * adulthood + log_shucked_weight * adulthood +
+    viscera_weight + log_viscera_weight + viscera_weight * adulthood + log_viscera_weight *
+    adulthood + whole_weight + log_whole_weight + whole_weight * adulthood + log_whole_weight *
+    adulthood + shell_weight + log_shell_weight + shell_weight * adulthood + log_shell_weight *
+    adulthood,
+    data = abalone_train,
+    method = "xgbTree",
+    trControl = ctrl,
+    verbosity = 0
+)
+
+summary(xgb_complete)
+
+predict_error(xgb_complete, abalone_test)
+```
+
+```{r}
+# XGBoost with selected features
+set.seed(42)
+
+ctrl = trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
+xgb_multi <- train(
+    rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train,
+    method = "xgbTree",
+    trControl = ctrl,
+    verbosity = 0
+)
+
+summary(xgb_multi)
+
+predict_error(xgb_multi, abalone_test)
+```
+
+```{r}
+# XGBoost with selected features + grid search
+set.seed(42)
+
+gridsearch_xgb <- expand.grid(
+    eta = c(0.1, 0.3, 0.5),
+    max_depth = c(3, 5, 7),
+    min_child_weight = 1,
+    subsample = 0.8,
+    colsample_bytree = 0.8,
+    nrounds = (1:10) * 200,
+    gamma = 0
+)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42),
+    verboseIter = TRUE,
+)
+
+xgb_grid <- train(
+    rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train,
+    method = "xgbTree",
+    tuneGrid = gridsearch_xgb,
+    trControl = ctrl,
+    verbosity = 0
+)
+
+summary(xgb_grid)
+
+predict_error(xgb_grid, abalone_test)
+```
+
+None of the XGBoost models outperform our multiple linear model in terms of RSS.
+
+## Kernel density estimators
+
+Kernel density estimators are non-parametric methods which attempt to estimate the probability density function of a variable, depending on the chosen kernel and bandwith.
+
+```{r}
+kernel_init <- ksmooth(
+    x = abalone_train$height,
+    y = abalone_train$rings,
+    kernel = "normal",
+    bandwidth = 1,
+    x.points = abalone_test$height
+)
+
+plot(
+    abalone_train$height,
+    abalone_train$rings,
+    ylab = "Rings",
+    xlab = "Height",
+    pch = 20,
+    cex = 0.8,
+    type = "p",
+    main = "Predicted density from kernel estimator"
+) +
+lines(
+    kernel_init,
+    lwd = 3,
+    col = "limegreen"
+)
+
+y_pred <- kernel_init$y
+y_pred[is.na(y_pred)] <- mean(y_pred, na.rm = TRUE)
+
+print(residual_mean_of_squares(abalone_test$rings, y_pred))
+```
+
+The following function allows to find the best bandwith thanks to a grid search.
+
+```{r}
+set.seed(42)
+
+n <- length(abalone_train$height)
+n_cv <- 100
+k <- 5
+cv_lab <- sample(n, n, replace = F) %% k
+h_seq <- seq(0.1, 5, by = 0.01)
+
+cv_err_h <- rep(0, length(h_seq))
+
+for (i_tmp in 1:n_cv) {
+
+    print(i_tmp)
+
+    cv_err_h_tmp <- rep(0, length(h_seq))
+    cv_lab <- sample(n, n, replace = F) %% k
+
+    for (i in seq_len(length(h_seq))) {
+
+        h0 <- h_seq[i]
+        cv_err <- 0
+
+        for (i_cv in 1:k) {
+
+            w_val <- which(cv_lab == (i_cv - 1))
+
+            x_tr <- abalone_train$height[-w_val]
+            y_tr <- abalone_train$rings[-w_val]
+            x_val <- abalone_train$height[w_val]
+            y_val <- abalone_train$rings[w_val]
+
+            kernel_reg <- ksmooth(
+                x = x_tr,
+                y = y_tr,
+                kernel = "normal",
+                bandwidth = h0,
+                x.points = x_val
+            )
+
+            cv_err <- cv_err + mean((y_val[order(x_val)] - kernel_reg$y)^2, na.rm = T)
+
+        }
+
+        cv_err_h_tmp[i] <- cv_err / k
+
+    }
+
+    cv_err_h <- cv_err_h + cv_err_h_tmp
+
+}
+
+cv_err_h <- cv_err_h / n_cv
+
+plot(
+    h_seq,
+    cv_err_h,
+    xlab = "Smoothing Bandwidth",
+    ylab = "CV Error",
+    type = "l",
+    lwd = 4,
+    col = "blue"
+)
+```
+
+```{r}
+# Optimal density estimator
+# h_opt_final <- h_seq[which(cv_err_h == min(cv_err_h))]
+h_opt_final <- 4.52
+
+kernel_init <- ksmooth(
+    x = abalone_train$height,
+    y = abalone_train$rings,
+    kernel = "normal",
+    bandwidth = h_opt_final,
+    x.points = abalone_test$height
+)
+
+plot(
+    abalone_train$height,
+    abalone_train$rings,
+    ylab = "Rings",
+    xlab = "Height",
+    pch = 20,
+    cex = 0.8,
+    type = "p",
+    main = "Predicted density from kernel estimator"
+) +
+lines(
+    kernel_init,
+    lwd = 3,
+    col = "limegreen"
+)
+
+y_pred <- kernel_init$y
+y_pred[is.na(y_pred)] <- mean(y_pred, na.rm = TRUE)
+
+print(residual_mean_of_squares(abalone_test$rings, y_pred))
+```
+
+None of the kernel estimators outperform our multiple linear model in terms of RSS.
+
+## GLMNet
+
+```{r}
+# glmnet with all initial features
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
+glm_init <- train(
+    rings ~ .,
+    data = abalone_train[, init_feat],
+    method = "glmnet",
+    trControl = ctrl,
+    verbosity = 0
+)
+
+summary(glm_init)
+
+predict_error(glm_init, abalone_test)
+```
+
+```{r}
+# glmnet with all computed features
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
+glm_complete <- train(
+    rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
+    diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
+    log_height + height * adulthood + height2 * adulthood + log_height * adulthood + shucked_weight
+    + log_shucked_weight + shucked_weight * adulthood + log_shucked_weight * adulthood +
+    viscera_weight + log_viscera_weight + viscera_weight * adulthood + log_viscera_weight *
+    adulthood + whole_weight + log_whole_weight + whole_weight * adulthood + log_whole_weight *
+    adulthood + shell_weight + log_shell_weight + shell_weight * adulthood + log_shell_weight *
+    adulthood,
+    data = abalone_train,
+    method = "glmnet",
+    trControl = ctrl,
+    verbosity = 0
+)
+
+summary(glm_complete)
+
+predict_error(glm_complete, abalone_test)
+```
+
+```{r}
+# glmnet with all computed features(log)
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
+glm_log_complete <- train(
+    log_rings ~ adulthood + length + log_length + length * adulthood + log_length * adulthood +
+    diameter + log_diameter + diameter * adulthood + log_diameter * adulthood + height + height2 +
+    log_height + height * adulthood + height2 * adulthood + log_height * adulthood + shucked_weight
+    + log_shucked_weight + shucked_weight * adulthood + log_shucked_weight * adulthood +
+    viscera_weight + log_viscera_weight + viscera_weight * adulthood + log_viscera_weight *
+    adulthood + whole_weight + log_whole_weight + whole_weight * adulthood + log_whole_weight *
+    adulthood + shell_weight + log_shell_weight + shell_weight * adulthood + log_shell_weight *
+    adulthood,
+    data = abalone_train,
+    method = "glmnet",
+    trControl = ctrl,
+    verbosity = 0
+)
+
+summary(glm_log_complete)
+
+predict_log_error(glm_log_complete, abalone_test)
+```
+
+```{r}
+# glmnet with selected features
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
+glm_multi <- train(
+    rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train,
+    method = "glmnet",
+    trControl = ctrl,
+    verbosity = 0
+)
+
+summary(glm_multi)
+
+predict_error(glm_multi, abalone_test)
+```
+
+```{r}
+# glmnet with selected features and log transf. of rings
+set.seed(42)
+
+ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    seeds = set.seed(42)
+)
+
+glm_log_multi <- train(
+    log_rings ~ length * adulthood + log_length + height + height * adulthood +
+    shucked_weight * adulthood + log_shucked_weight * adulthood + viscera_weight +
+    log_whole_weight * adulthood + whole_weight * adulthood + log_shell_weight,
+    data = abalone_train,
+    method = "glmnet",
+    trControl = ctrl,
+    verbosity = 0
+)
+
+summary(glm_log_multi)
+
+predict_log_error(glm_log_multi, abalone_test)
+```
