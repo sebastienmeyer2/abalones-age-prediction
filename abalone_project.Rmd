@@ -1,6 +1,6 @@
 ---
-title: "Project: Abalones age prediction"
-author: "Ali Haidar, Shiqi Liu, Sébastien Meyer, Ziru Niu"
+title: "Abalones Age Prediction"
+author: "Sébastien Meyer, Ziru Niu and 2 other students"
 date: ""
 output:
     html_document:

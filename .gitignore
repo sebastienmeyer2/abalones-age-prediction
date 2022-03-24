@@ -347,5 +347,6 @@ TSWLatexianTemp*
 # ---> R Linter
 .lintr
 
-# Local config files
-.python-version
+# ---> Local TeX files
+report/abalone_report.tex
+report/arxiv.sty
