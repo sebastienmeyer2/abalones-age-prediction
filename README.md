@@ -39,3 +39,4 @@ Below, we give a brief tree view of our package.
     ├── abalone_data.csv
     ├── abalone_project.html  # knitted code
     └── abalone_project.Rmd  # contains all our code
+
