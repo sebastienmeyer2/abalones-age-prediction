@@ -57,7 +57,7 @@ set.seed(42)
 ## Importing the data
 
 ```{r}
-# Read the csv file
+# Read the csv file 
 abalone <- read.csv2("abalone_data.csv", header = T, sep = ",")
 
 # Lowercase column names
